@@ -1,0 +1,2859 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Flappy Kiro</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #1a1a2e;
+        }
+
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        #gameCanvas {
+            display: block;
+            max-width: 100vw;
+            max-height: 100vh;
+            width: auto;
+            height: auto;
+            aspect-ratio: 2 / 3;
+            object-fit: contain;
+        }
+
+        @media (max-aspect-ratio: 2/3) {
+            #gameCanvas {
+                width: 100vw;
+                height: auto;
+            }
+        }
+
+        @media (min-aspect-ratio: 2/3) {
+            #gameCanvas {
+                width: auto;
+                height: 100vh;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <canvas id="gameCanvas" width="400" height="600"></canvas>
+
+    <script>
+        // ============================================================
+        // GAME_CONFIG - Centralized Configuration
+        // All numerical constants, tuning values, and parameters.
+        // No magic numbers appear in logic code.
+        // ============================================================
+
+        const GAME_CONFIG = Object.freeze({
+            canvas: Object.freeze({
+                width: 400,
+                height: 600,
+                aspectRatio: 2 / 3,
+                backgroundColor: '#87CEEB',
+                frameRateTarget: 60,
+                frameBudgetMs: 16.67
+            }),
+
+            physics: Object.freeze({
+                gravity: 980,                    // px/s²
+                flapImpulse: -300,               // px/s (negative = upward)
+                terminalVelocityDown: 500,       // px/s
+                terminalVelocityUp: 400,         // px/s (magnitude, stored as -400)
+                maxRotationDeg: 30,              // degrees
+                physicsStepMs: 16.67             // fixed timestep (60Hz)
+            }),
+
+            difficulty: Object.freeze({
+                baseWallSpeed: 120,              // px/s
+                baseSpacing: 200,                // px horizontal distance between pairs
+                baseGapHeight: 130,              // px vertical gap
+                minGapHeight: 90,                // px minimum gap
+                minSpacing: 150,                 // px minimum spacing
+                speedIncrementPercent: 5,        // % increase per threshold
+                speedThreshold: 5,              // points per speed increment
+                maxSpeedMultiplier: 2.0,         // 200% max speed
+                gapDecrementPx: 2,              // px decrease per threshold
+                gapThreshold: 5,                // points per gap decrement
+                spacingDecrementPx: 5,          // px decrease per threshold
+                spacingThreshold: 10            // points per spacing decrement
+            }),
+
+            collision: Object.freeze({
+                ghostyHitboxRadius: null,        // Computed at init: min(spriteWidth, spriteHeight) / 2
+                ghostyHitboxRadiusScale: 0.8,    // Multiplier for inscribed circle (1.0 = full inscribed)
+                wallBoundingMode: 'aabb'         // Walls use axis-aligned bounding rectangles
+            }),
+
+            walls: Object.freeze({
+                width: 50,                       // px
+                capOverhang: 10,                 // px cap extends beyond wall width on each side
+                capHeight: 20,                   // px
+                wallColor: '#2ecc40',
+                capColor: '#1a7a1a',
+                gapCenterMinPercent: 0.2,        // 20% of canvas height
+                gapCenterMaxPercent: 0.8,        // 80% of canvas height
+                gapCenterMinMargin: 60           // px from top/bottom boundary
+            }),
+
+            ghosty: Object.freeze({
+                spriteWidth: 64,                 // px (from loaded asset)
+                spriteHeight: 64,                // px (from loaded asset)
+                frames: 4,                       // number of frames in the horizontal sprite sheet
+                frameDuration: 100,              // ms per frame for animation loop
+                startXFraction: 0.33,            // left third of canvas
+                startYFraction: 0.5,             // vertically centered
+                bobAmplitude: 10,                // px for menu bobbing
+                bobFrequency: 2                  // Hz for menu bobbing
+            }),
+
+            particles: Object.freeze({
+                trailCountMin: 3,
+                trailCountMax: 5,
+                burstCountMin: 5,
+                burstCountMax: 8,
+                radiusMin: 2,                    // px
+                radiusMax: 4,                    // px
+                initialOpacity: 0.8,
+                lifetimeMs: 400,
+                spawnOffsetY: 3,                 // ±px random vertical offset
+                color: '#FFFFFF',
+                poolSize: 100                    // pre-allocated particle pool size
+            }),
+
+            pools: Object.freeze({
+                wallPairPoolSize: 10,            // pre-allocated wall pair pool
+                particlePoolSize: 100            // pre-allocated particle pool
+            }),
+
+            rendering: Object.freeze({
+                deltaTimeCap: 50,                // ms max delta-time
+                screenShakeAmplitude: 5,         // px
+                screenShakeDuration: 300,        // ms
+                tumbleRotation: 360,             // degrees
+                tumbleDuration: 500,             // ms
+                whiteFlashOpacity: 0.5,
+                whiteFlashDuration: 100,         // ms
+                scorePopupRise: 30,              // px
+                scorePopupDuration: 600,         // ms
+                invincibilityDuration: 1000,     // ms
+                invincibilityPulseInterval: 100, // ms
+                invincibilityMinOpacity: 0.5,
+                invincibilityMaxOpacity: 1.0,
+                gameOverDebounce: 500,           // ms
+                newRecordFlashDuration: 500,     // ms
+                newRecordFlashColor: '#FFD700',
+                hudScoreOpacity: 0.3
+            }),
+
+            clouds: Object.freeze({
+                layerCount: 3,
+                speedFactors: Object.freeze([0.2, 0.4, 0.6]),  // fraction of wall speed per layer
+                minOpacity: 0.3,
+                maxOpacity: 0.7,
+                spawnRegionFraction: 0.66        // upper 2/3 of canvas
+            }),
+
+            audio: Object.freeze({
+                jumpSound: 'assets/jump.wav',
+                gameOverSound: 'assets/game_over.wav',
+                scoreSound: null,                // Generated or embedded chime
+                masterVolume: 1.0,
+                sfxVolume: 0.8
+            })
+        });
+
+        // ============================================================
+        // ObjectPool<T> - Generic Reusable Object Pool
+        // Pre-allocates and recycles game objects to minimize GC pressure.
+        // Used for Wall_Pairs and Particles.
+        // ============================================================
+
+        class ObjectPool {
+            /**
+             * @param {function(): T} factory - Creates a new instance of T
+             * @param {function(T): void} reset - Resets an instance to default state
+             * @param {number} initialSize - Number of objects to pre-allocate
+             */
+            constructor(factory, reset, initialSize) {
+                this._factory = factory;
+                this._reset = reset;
+                this._initialSize = initialSize;
+                this._pool = [];    // Available objects
+                this._active = [];  // Currently in-use objects
+
+                // Pre-allocate initialSize objects into the available pool
+                for (let i = 0; i < initialSize; i++) {
+                    this._pool.push(this._factory());
+                }
+            }
+
+            /**
+             * Acquire an object from the pool.
+             * Returns from pool if available, otherwise creates overflow instance.
+             * Moves the object to the active array.
+             * @returns {T}
+             */
+            acquire() {
+                let obj;
+                if (this._pool.length > 0) {
+                    obj = this._pool.pop();
+                } else {
+                    obj = this._factory();
+                }
+                this._active.push(obj);
+                return obj;
+            }
+
+            /**
+             * Release an object back to the pool.
+             * Removes from active array, calls reset, returns to available pool.
+             * @param {T} obj
+             */
+            release(obj) {
+                const index = this._active.indexOf(obj);
+                if (index === -1) return;
+                this._active.splice(index, 1);
+                this._reset(obj);
+                this._pool.push(obj);
+            }
+
+            /**
+             * Release all active objects back to the pool.
+             */
+            releaseAll() {
+                while (this._active.length > 0) {
+                    const obj = this._active.pop();
+                    this._reset(obj);
+                    this._pool.push(obj);
+                }
+            }
+
+            /**
+             * Get the array of currently active objects.
+             * @returns {T[]}
+             */
+            getActive() {
+                return this._active;
+            }
+
+            /**
+             * Get the number of available (idle) objects in the pool.
+             * @returns {number}
+             */
+            getAvailableCount() {
+                return this._pool.length;
+            }
+
+            /**
+             * Get the number of currently active (in-use) objects.
+             * @returns {number}
+             */
+            getActiveCount() {
+                return this._active.length;
+            }
+        }
+
+        // ============================================================
+        // InputHandler - Unified Input Handling
+        // Handles mouse, touch, and keyboard input for game actions.
+        // Requirements: 1.6, 2.2, 2.4, 6.1, 6.5
+        // ============================================================
+
+        class InputHandler {
+            constructor(canvas) {
+                this.canvas = canvas;
+                this.onAction = null; // Callback: (action: 'flap' | 'pause') => void
+
+                // Store bound references for proper unbinding
+                this._handleClick = this._onFlap.bind(this);
+                this._handleTouchStart = this._onTouchStart.bind(this);
+                this._handleKeyDown = this._onKeyDown.bind(this);
+            }
+
+            /**
+             * Register event listeners on the canvas and document.
+             * - Canvas: click and touchstart → 'flap'
+             * - Document: keydown → Space='flap', P/Escape='pause'
+             */
+            bindEvents() {
+                this.canvas.addEventListener('click', this._handleClick);
+                this.canvas.addEventListener('touchstart', this._handleTouchStart);
+                document.addEventListener('keydown', this._handleKeyDown);
+            }
+
+            /**
+             * Remove all registered event listeners for clean teardown.
+             */
+            unbindEvents() {
+                this.canvas.removeEventListener('click', this._handleClick);
+                this.canvas.removeEventListener('touchstart', this._handleTouchStart);
+                document.removeEventListener('keydown', this._handleKeyDown);
+            }
+
+            /**
+             * Trigger the 'flap' action via the callback.
+             */
+            _onFlap() {
+                if (this.onAction) {
+                    this.onAction('flap');
+                }
+            }
+
+            /**
+             * Handle touchstart: prevent default scrolling and trigger 'flap'.
+             */
+            _onTouchStart(e) {
+                e.preventDefault();
+                this._onFlap();
+            }
+
+            /**
+             * Handle keydown: Space triggers 'flap', P and Escape trigger 'pause'.
+             */
+            _onKeyDown(e) {
+                if (!this.onAction) return;
+
+                if (e.code === 'Space') {
+                    e.preventDefault();
+                    this.onAction('flap');
+                } else if (e.code === 'KeyP' || e.code === 'Escape') {
+                    e.preventDefault();
+                    this.onAction('pause');
+                }
+            }
+        }
+
+        // ============================================================
+        // GameState - Enum-like constants for game states
+        // ============================================================
+
+        const GameState = Object.freeze({
+            Menu: 'Menu',
+            Ready: 'Ready',
+            Playing: 'Playing',
+            Paused: 'Paused',
+            Game_Over: 'Game_Over'
+        });
+
+        // ============================================================
+        // StateMachine - Manages game state transitions with validation
+        // ============================================================
+
+        class StateMachine {
+            constructor() {
+                this.currentState = GameState.Menu;
+                this.previousState = null;
+
+                // Valid state transitions map
+                this._transitions = {
+                    [GameState.Menu]: [GameState.Ready],
+                    [GameState.Ready]: [GameState.Playing],
+                    [GameState.Playing]: [GameState.Paused, GameState.Game_Over],
+                    [GameState.Paused]: [GameState.Playing],
+                    [GameState.Game_Over]: [GameState.Playing]
+                };
+
+                // Callback registries for state enter/exit hooks
+                this._onEnterCallbacks = {};
+                this._onExitCallbacks = {};
+            }
+
+            /**
+             * Check if a transition from one state to another is valid.
+             * @param {string} from - The source state
+             * @param {string} to - The target state
+             * @returns {boolean} True if the transition is allowed
+             */
+            canTransition(from, to) {
+                const allowed = this._transitions[from];
+                if (!allowed) return false;
+                return allowed.includes(to);
+            }
+
+            /**
+             * Attempt to transition to a new state.
+             * Calls onExit for old state and onEnter for new state if valid.
+             * @param {string} newState - The target state to transition to
+             * @returns {boolean} True if the transition succeeded, false if invalid
+             */
+            transition(newState) {
+                if (!this.canTransition(this.currentState, newState)) {
+                    return false;
+                }
+
+                const oldState = this.currentState;
+                this.previousState = oldState;
+
+                // Call exit callback for old state
+                this.onExit(oldState);
+
+                // Update current state
+                this.currentState = newState;
+
+                // Call enter callback for new state
+                this.onEnter(newState);
+
+                return true;
+            }
+
+            /**
+             * Invoke registered onEnter callback for a state.
+             * @param {string} state - The state being entered
+             */
+            onEnter(state) {
+                const callback = this._onEnterCallbacks[state];
+                if (callback) {
+                    callback(state);
+                }
+            }
+
+            /**
+             * Invoke registered onExit callback for a state.
+             * @param {string} state - The state being exited
+             */
+            onExit(state) {
+                const callback = this._onExitCallbacks[state];
+                if (callback) {
+                    callback(state);
+                }
+            }
+
+            /**
+             * Register a callback to be invoked when entering a specific state.
+             * @param {string} state - The state to listen for
+             * @param {function} callback - The function to call on entering the state
+             */
+            registerOnEnter(state, callback) {
+                this._onEnterCallbacks[state] = callback;
+            }
+
+            /**
+             * Register a callback to be invoked when exiting a specific state.
+             * @param {string} state - The state to listen for
+             * @param {function} callback - The function to call on exiting the state
+             */
+            registerOnExit(state, callback) {
+                this._onExitCallbacks[state] = callback;
+            }
+        }
+
+        // ============================================================
+        // GameEngine - Main Controller with Fixed-Timestep Game Loop
+        // Top-level coordinator: owns the game loop, orchestrates subsystems.
+        // Requirements: 9.1, 9.2, 9.3, 9.4, 9.5, 9.6
+        // ============================================================
+
+        class GameEngine {
+            /**
+             * @param {HTMLCanvasElement} canvasElement - The canvas to render on
+             */
+            constructor(canvasElement) {
+                this.canvas = canvasElement;
+                this.ctx = canvasElement.getContext('2d');
+
+                // State machine
+                this.stateMachine = new StateMachine();
+
+                // Timing state for the fixed-timestep loop
+                this._lastTime = 0;
+                this._accumulator = 0;
+                this._physicsStepMs = GAME_CONFIG.physics.physicsStepMs;
+                this._rafId = null;
+                this._running = false;
+
+                // Subsystem references (populated in task 12.1)
+                this.ghosty = null;
+                this.physics = null;
+                this.wallManager = null;
+                this.collisionDetector = null;
+                this.scoreManager = null;
+                this.audioManager = null;
+                this.particleSystem = null;
+                this.cloudSystem = null;
+                this.renderer = null;
+                this.inputHandler = null;
+                this.wallPool = null;
+                this.particlePool = null;
+                this.difficultyScaler = null;
+                this.effectsManager = null;
+
+                // Game-over debounce tracking
+                this._gameOverTime = 0;
+
+                // Register state machine callback to track game-over timestamp
+                this.stateMachine.registerOnEnter(GameState.Game_Over, () => {
+                    this._gameOverTime = performance.now();
+                });
+
+                // Bind the loop method so it can be used as RAF callback
+                this._boundLoop = this.loop.bind(this);
+
+                // Bind visibility change handler
+                this._handleVisibilityChange = this._onVisibilityChange.bind(this);
+                document.addEventListener('visibilitychange', this._handleVisibilityChange);
+            }
+
+            /**
+             * Async initialization: load assets, initialize subsystems, compute hitbox radius.
+             * Creates Object Pools, instantiates all subsystems, loads assets, and wires input.
+             * @returns {Promise<void>}
+             */
+            async init() {
+                // Create Object Pools
+                this.wallPool = new ObjectPool(createWallPair, resetWallPair, GAME_CONFIG.pools.wallPairPoolSize);
+                this.particlePool = new ObjectPool(createParticle, resetParticle, GAME_CONFIG.pools.particlePoolSize);
+
+                // Instantiate subsystems
+                this.ghosty = new Ghosty();
+                this.physics = new PhysicsEngine(GAME_CONFIG.physics);
+                this.difficultyScaler = new DifficultyScaler(GAME_CONFIG.difficulty);
+                this.wallManager = new WallManager(GAME_CONFIG.walls, this.wallPool);
+                this.collisionDetector = new CollisionDetector(GAME_CONFIG.collision);
+                this.scoreManager = new ScoreManager('flappy_kiro_high_score');
+                this.audioManager = new AudioManager(GAME_CONFIG.audio);
+                this.particleSystem = new ParticleSystem(GAME_CONFIG.particles, this.particlePool);
+                this.cloudSystem = new CloudSystem(GAME_CONFIG.clouds);
+                this.effectsManager = new EffectsManager(GAME_CONFIG.rendering);
+                this.renderer = new Renderer(this.ctx, GAME_CONFIG.rendering);
+                this.inputHandler = new InputHandler(this.canvas);
+
+                // Load assets
+                await this.ghosty.loadSprite();
+                await this.audioManager.preload();
+
+                // Wire input handler
+                this.inputHandler.onAction = (action) => this.handleInput(action);
+                this.inputHandler.bindEvents();
+            }
+
+            /**
+             * Begin the game loop by requesting the first animation frame.
+             */
+            start() {
+                if (this._running) return;
+                this._running = true;
+                this._lastTime = performance.now();
+                this._accumulator = 0;
+                this._rafId = requestAnimationFrame(this._boundLoop);
+            }
+
+            /**
+             * Main game loop callback (called by requestAnimationFrame).
+             * Implements fixed-timestep accumulator with interpolated rendering.
+             * @param {number} timestamp - High-resolution timestamp from RAF
+             */
+            loop(timestamp) {
+                if (!this._running) return;
+
+                // Calculate delta-time, cap at GAME_CONFIG.rendering.deltaTimeCap (50ms)
+                let deltaTime = timestamp - this._lastTime;
+                if (deltaTime > GAME_CONFIG.rendering.deltaTimeCap) {
+                    deltaTime = GAME_CONFIG.rendering.deltaTimeCap;
+                }
+                this._lastTime = timestamp;
+
+                // Fixed-timestep accumulator: physics updates at physicsStepMs intervals
+                this._accumulator += deltaTime;
+
+                while (this._accumulator >= this._physicsStepMs) {
+                    this.update(this._physicsStepMs / 1000); // Convert ms to seconds for dt
+                    this._accumulator -= this._physicsStepMs;
+                }
+
+                // Compute interpolation factor for smooth rendering between physics steps
+                const interpolation = this._accumulator / this._physicsStepMs;
+
+                // Render every frame regardless of game state
+                this.render(interpolation);
+
+                // Request next frame
+                this._rafId = requestAnimationFrame(this._boundLoop);
+            }
+
+            /**
+             * Update game logic: physics, collisions, scoring, particles, clouds, effects.
+             * Clouds and effects update in all states; gameplay only updates when Playing.
+             * @param {number} dt - Delta-time in seconds (fixed physics step)
+             */
+            update(dt) {
+                const state = this.stateMachine.currentState;
+
+                // Update clouds in all states (ambient motion)
+                if (this.cloudSystem) {
+                    const wallSpeed = state === GameState.Playing
+                        ? this.difficultyScaler.calculate(this.scoreManager.currentScore).currentSpeed
+                        : GAME_CONFIG.difficulty.baseWallSpeed;
+                    this.cloudSystem.update(dt, wallSpeed);
+                }
+
+                // Update effects in all states
+                if (this.effectsManager) this.effectsManager.update(dt);
+
+                // Only update gameplay when Playing
+                if (state !== GameState.Playing) return;
+
+                // Update Ghosty's invincibility timer
+                if (this.ghosty) this.ghosty.updateInvincibility(dt);
+
+                // Save previous Y for interpolation
+                if (this.ghosty) this.ghosty.prevY = this.ghosty.y;
+
+                // Physics: apply gravity, clamp velocity, update position
+                if (this.physics && this.ghosty) {
+                    this.physics.update(this.ghosty, dt);
+                    this.ghosty.y += this.ghosty.vy * dt;
+                    this.ghosty.rotation = this.physics.calculateRotation(this.ghosty.vy);
+                }
+
+                // Difficulty calculation
+                const difficulty = this.difficultyScaler.calculate(this.scoreManager.currentScore);
+
+                // Wall management
+                if (this.wallManager) this.wallManager.update(dt, difficulty);
+
+                // Collision detection
+                if (this.collisionDetector && this.ghosty) {
+                    const walls = this.wallManager.getActiveWalls();
+                    const result = this.collisionDetector.checkCollision(this.ghosty, walls);
+                    if (result.collided) {
+                        this.triggerGameOver();
+                        return;
+                    }
+                    // Floor boundary (score bar top = canvas height - 40)
+                    const floorResult = this.collisionDetector.checkBoundary(this.ghosty, GAME_CONFIG.canvas.height - 40);
+                    if (floorResult.collided) {
+                        this.triggerGameOver();
+                        return;
+                    }
+                }
+
+                // Scoring
+                if (this.scoreManager && this.ghosty && this.wallManager) {
+                    const scored = this.scoreManager.checkScore(this.ghosty, this.wallManager.getActiveWalls());
+                    if (scored) {
+                        this.audioManager.play('score');
+                        this.effectsManager.addPopup(this.ghosty.x + this.ghosty.width, this.ghosty.y);
+                    }
+                    this.scoreManager.updateFlashTimer(dt);
+                }
+
+                // Particles: emit trail
+                if (this.particleSystem && this.ghosty) {
+                    this.particleSystem.emitTrail(this.ghosty.x, this.ghosty.y + this.ghosty.height / 2);
+                    this.particleSystem.update(dt);
+                }
+            }
+
+            /**
+             * Render the current frame. Runs every frame regardless of state.
+             * Delegates to Renderer subsystem with all game state.
+             * @param {number} interpolation - Interpolation factor [0, 1) between physics steps
+             */
+            render(interpolation) {
+                if (!this.renderer) return;
+
+                // Update Ghosty bob for Menu state
+                if (this.stateMachine.currentState === GameState.Menu && this.ghosty) {
+                    this.ghosty.updateBob(performance.now() / 1000);
+                }
+
+                this.renderer.render({
+                    ghosty: this.ghosty,
+                    wallManager: this.wallManager,
+                    cloudSystem: this.cloudSystem,
+                    particleSystem: this.particleSystem,
+                    effectsManager: this.effectsManager,
+                    scoreManager: this.scoreManager,
+                    physics: this.physics,
+                    interpolation: interpolation,
+                    time: performance.now(),
+                    gameState: this.stateMachine.currentState
+                });
+            }
+
+            /**
+             * Reset the game state for a new session.
+             * Resets Ghosty, walls, particles, score, effects, and difficulty.
+             * Transitions state machine to Playing.
+             * Requirements: 6.8, 6.9, 6.10, 6.11, 6.13, 6.14
+             */
+            resetGame() {
+                // 1. Reset Ghosty position, velocity, and grant invincibility (1000ms)
+                if (this.ghosty) {
+                    this.ghosty.reset();
+                }
+
+                // 2. Release all walls back to pool
+                if (this.wallManager) {
+                    this.wallManager.reset();
+                }
+
+                // 3. Release all particles back to pool
+                if (this.particleSystem) {
+                    this.particleSystem.reset();
+                }
+
+                // 4. Reset score (preserves high score)
+                if (this.scoreManager) {
+                    this.scoreManager.reset();
+                }
+
+                // 5. Reset visual effects (shake, tumble, flash, popups)
+                if (this.effectsManager) {
+                    this.effectsManager.reset();
+                }
+
+                // 6. Reset difficulty scaler
+                if (this.difficultyScaler) {
+                    this.difficultyScaler.reset();
+                }
+
+                // 7. Transition state machine to Playing
+                this.stateMachine.transition(GameState.Playing);
+            }
+
+            /**
+             * Handle player input actions based on current game state.
+             * Routes flap and pause actions through the state machine and subsystems.
+             * @param {string} action - 'flap' or 'pause'
+             */
+            handleInput(action) {
+                const state = this.stateMachine.currentState;
+
+                if (action === 'flap') {
+                    if (state === GameState.Menu) {
+                        this.stateMachine.transition(GameState.Ready);
+                    } else if (state === GameState.Ready) {
+                        this.stateMachine.transition(GameState.Playing);
+                        if (this.physics && this.ghosty) this.physics.applyFlap(this.ghosty);
+                        this.audioManager.play('jump');
+                    } else if (state === GameState.Playing) {
+                        if (this.physics && this.ghosty) this.physics.applyFlap(this.ghosty);
+                        this.audioManager.play('jump');
+                        if (this.particleSystem && this.ghosty) {
+                            this.particleSystem.emitBurst(this.ghosty.x, this.ghosty.y + this.ghosty.height);
+                        }
+                    } else if (state === GameState.Game_Over) {
+                        const now = performance.now();
+                        if (now - this._gameOverTime >= GAME_CONFIG.rendering.gameOverDebounce) {
+                            this.resetGame();
+                        }
+                    }
+                } else if (action === 'pause') {
+                    if (state === GameState.Playing) {
+                        this.stateMachine.transition(GameState.Paused);
+                    } else if (state === GameState.Paused) {
+                        this.stateMachine.transition(GameState.Playing);
+                    }
+                }
+            }
+
+            /**
+             * Handle visibility change: auto-pause when the tab loses focus.
+             * Requirement 9.5
+             */
+            _onVisibilityChange() {
+                if (document.hidden && this.stateMachine.currentState === GameState.Playing) {
+                    this.stateMachine.transition(GameState.Paused);
+                }
+            }
+
+            /**
+             * Trigger game over: transition state, update high score, play sound, trigger effects.
+             * Requirements: 4.5, 4.8, 4.9, 4.10, 4.11
+             */
+            triggerGameOver() {
+                this.stateMachine.transition(GameState.Game_Over);
+                if (this.scoreManager) this.scoreManager.updateHighScore();
+                if (this.audioManager) this.audioManager.play('gameOver');
+                if (this.effectsManager) this.effectsManager.triggerGameOver();
+            }
+
+            /**
+             * Stop the game loop and clean up.
+             */
+            stop() {
+                this._running = false;
+                if (this._rafId !== null) {
+                    cancelAnimationFrame(this._rafId);
+                    this._rafId = null;
+                }
+            }
+
+            /**
+             * Clean up event listeners.
+             */
+            destroy() {
+                this.stop();
+                document.removeEventListener('visibilitychange', this._handleVisibilityChange);
+            }
+        }
+
+        // ============================================================
+        // PhysicsEngine - Gravity, Velocity, Position, and Rotation
+        // Handles all physics simulation for Ghosty.
+        // All parameters read from GAME_CONFIG.physics.
+        // Requirements: 2.1, 2.2, 2.5, 2.6, 2.7, 2.8, 2.9
+        // ============================================================
+
+        class PhysicsEngine {
+            /**
+             * @param {typeof GAME_CONFIG.physics} config - Physics configuration object
+             */
+            constructor(config) {
+                this.config = config;
+            }
+
+            /**
+             * Apply gravity to Ghosty's vertical velocity.
+             * Increases vy by gravity * dt each frame.
+             * @param {object} ghosty - The ghosty state object with vy property
+             * @param {number} dt - Delta time in seconds
+             */
+            applyGravity(ghosty, dt) {
+                ghosty.vy += this.config.gravity * dt;
+            }
+
+            /**
+             * Apply flap impulse, setting vy to the configured flapImpulse value.
+             * @param {object} ghosty - The ghosty state object with vy property
+             */
+            applyFlap(ghosty) {
+                ghosty.vy = this.config.flapImpulse;
+            }
+
+            /**
+             * Clamp vertical velocity to terminal velocity limits.
+             * Downward: cannot exceed terminalVelocityDown (500 px/s)
+             * Upward: cannot exceed -terminalVelocityUp (-400 px/s)
+             * @param {object} ghosty - The ghosty state object with vy property
+             */
+            clampVelocity(ghosty) {
+                if (ghosty.vy > this.config.terminalVelocityDown) {
+                    ghosty.vy = this.config.terminalVelocityDown;
+                }
+                if (ghosty.vy < -this.config.terminalVelocityUp) {
+                    ghosty.vy = -this.config.terminalVelocityUp;
+                }
+            }
+
+            /**
+             * Prevent Ghosty from going above the canvas top boundary.
+             * If y < 0, clamp to 0 and reset upward velocity to 0.
+             * @param {object} ghosty - The ghosty state object with y and vy properties
+             * @param {number} canvasHeight - The canvas height (unused for top clamp, included for interface consistency)
+             */
+            clampPosition(ghosty, canvasHeight) {
+                if (ghosty.y < 0) {
+                    ghosty.y = 0;
+                    if (ghosty.vy < 0) {
+                        ghosty.vy = 0;
+                    }
+                }
+            }
+
+            /**
+             * Calculate rotation angle based on vertical velocity.
+             * Maps vy linearly to angle, clamped to [-maxRotationDeg, maxRotationDeg].
+             * Positive vy (falling) = positive angle (tilt down).
+             * Negative vy (rising) = negative angle (tilt up).
+             * @param {number} vy - Current vertical velocity
+             * @returns {number} Rotation angle in degrees, clamped to ±30
+             */
+            calculateRotation(vy) {
+                const maxDeg = this.config.maxRotationDeg;
+                let angle = (vy / this.config.terminalVelocityDown) * maxDeg;
+
+                // Clamp to [-maxRotationDeg, maxRotationDeg]
+                if (angle > maxDeg) {
+                    angle = maxDeg;
+                }
+                if (angle < -maxDeg) {
+                    angle = -maxDeg;
+                }
+
+                return angle;
+            }
+
+            /**
+             * Interpolate between previous and current Y position for smooth rendering.
+             * @param {number} prevY - Previous physics step Y position
+             * @param {number} currentY - Current physics step Y position
+             * @param {number} alpha - Interpolation factor in [0, 1]
+             * @returns {number} Interpolated Y position
+             */
+            interpolatePosition(prevY, currentY, alpha) {
+                return prevY + (currentY - prevY) * alpha;
+            }
+
+            /**
+             * Convenience method: applies gravity, clamps velocity, and clamps position.
+             * @param {object} ghosty - The ghosty state object
+             * @param {number} dt - Delta time in seconds
+             */
+            update(ghosty, dt) {
+                this.applyGravity(ghosty, dt);
+                this.clampVelocity(ghosty);
+                this.clampPosition(ghosty, GAME_CONFIG.canvas.height);
+            }
+        }
+
+        // ============================================================
+        // DifficultyScaler - Progressive Difficulty Calculation
+        // Calculates speed, gap, and spacing based on current score.
+        // All thresholds and bounds read from GAME_CONFIG.difficulty.
+        // Requirements: 3.7, 3.8, 3.9, 3.10
+        // ============================================================
+
+        class DifficultyScaler {
+            /**
+             * @param {typeof GAME_CONFIG.difficulty} config - Difficulty configuration object
+             */
+            constructor(config) {
+                this.config = config;
+            }
+
+            /**
+             * Calculate difficulty parameters based on the current score.
+             * All formulas use config values — no magic numbers.
+             *
+             * Speed multiplier: min(1.0 + floor(score / speedThreshold) * (speedIncrementPercent / 100), maxSpeedMultiplier)
+             * Gap height: max(baseGapHeight - floor(score / gapThreshold) * gapDecrementPx, minGapHeight)
+             * Spacing: max(baseSpacing - floor(score / spacingThreshold) * spacingDecrementPx, minSpacing)
+             * Current speed: baseWallSpeed * speedMultiplier
+             *
+             * @param {number} score - The player's current score
+             * @returns {{ speedMultiplier: number, gapHeight: number, spacing: number, currentSpeed: number }}
+             */
+            calculate(score) {
+                const config = this.config;
+
+                const speedMultiplier = Math.min(
+                    1.0 + Math.floor(score / config.speedThreshold) * (config.speedIncrementPercent / 100),
+                    config.maxSpeedMultiplier
+                );
+
+                const gapHeight = Math.max(
+                    config.baseGapHeight - Math.floor(score / config.gapThreshold) * config.gapDecrementPx,
+                    config.minGapHeight
+                );
+
+                const spacing = Math.max(
+                    config.baseSpacing - Math.floor(score / config.spacingThreshold) * config.spacingDecrementPx,
+                    config.minSpacing
+                );
+
+                const currentSpeed = config.baseWallSpeed * speedMultiplier;
+
+                return { speedMultiplier, gapHeight, spacing, currentSpeed };
+            }
+
+            /**
+             * Reset difficulty state. The calculate method is purely functional
+             * (derives all values from score), so there is no persistent state to clear.
+             */
+            reset() {
+                // No persistent state — calculate() is purely functional based on score.
+            }
+        }
+
+        // ============================================================
+        // Ghosty - Player Character State and Rendering
+        // Manages sprite loading, hitbox, bobbing, invincibility,
+        // and rendering with interpolation.
+        // Requirements: 1.7, 1.9, 1.11, 2.4, 6.13, 6.14, 8.1, 8.5
+        // ============================================================
+
+        class Ghosty {
+            constructor() {
+                // Sprite
+                this.sprite = null;
+                this.spriteLoaded = false;
+                this.spriteLoadFailed = false;
+
+                // State
+                this.x = GAME_CONFIG.canvas.width * GAME_CONFIG.ghosty.startXFraction;
+                this.y = GAME_CONFIG.canvas.height * GAME_CONFIG.ghosty.startYFraction;
+                this.vy = 0;
+                this.prevY = this.y;
+                this.rotation = 0;
+                this.width = GAME_CONFIG.ghosty.spriteWidth;
+                this.height = GAME_CONFIG.ghosty.spriteHeight;
+                this.frames = GAME_CONFIG.ghosty.frames || 1;
+                this.frameWidth = this.width; // Default, will be updated in loadSprite
+                this.frameHeight = this.height;
+                this.currentFrame = 0;
+                this.hitboxRadius = Math.min(this.width, this.height) / 2 * GAME_CONFIG.collision.ghostyHitboxRadiusScale;
+                this.invincibleTimer = 0;
+                this.bobOffset = 0;
+            }
+
+            /**
+             * Load the ghosty sprite image asynchronously.
+             * On success: stores the image and recomputes hitbox radius from actual dimensions.
+             * On failure: sets fallback flag and logs error.
+             * @returns {Promise<boolean>} True if sprite loaded successfully, false otherwise.
+             */
+            loadSprite() {
+                return new Promise((resolve) => {
+                    const img = new Image();
+                    img.onload = () => {
+                        this.sprite = img;
+                        this.spriteLoaded = true;
+                        // Preserve the initialized logical height but scale width proportionally
+                        this.frameWidth = img.naturalWidth / this.frames;
+                        this.frameHeight = img.naturalHeight;
+                        const aspectRatio = this.frameWidth / this.frameHeight;
+                        this.width = GAME_CONFIG.ghosty.spriteHeight * aspectRatio;
+                        this.height = GAME_CONFIG.ghosty.spriteHeight;
+                        // Recompute hitbox radius from the logical dimensions
+                        this.hitboxRadius = Math.min(this.width, this.height) / 2 * GAME_CONFIG.collision.ghostyHitboxRadiusScale;
+                        resolve(true);
+                    };
+                    img.onerror = () => {
+                        this.spriteLoadFailed = true;
+                        console.error('Failed to load ghosty sprite: assets/ghosty.png');
+                        resolve(false);
+                    };
+                    img.src = 'assets/ghosty.png';
+                });
+            }
+
+            /**
+             * Update the bobbing offset for menu animation.
+             * Uses sine wave: bobOffset = sin(time * 2π * frequency) * amplitude
+             * @param {number} time - Current time in seconds (e.g., performance.now() / 1000)
+             */
+            updateBob(time) {
+                this.bobOffset = Math.sin(time * 2 * Math.PI * GAME_CONFIG.ghosty.bobFrequency) * GAME_CONFIG.ghosty.bobAmplitude;
+            }
+
+            /**
+             * Decrease invincibility timer by dt (in ms), clamp to 0.
+             * @param {number} dt - Delta time in seconds
+             */
+            updateInvincibility(dt) {
+                if (this.invincibleTimer > 0) {
+                    this.invincibleTimer -= dt * 1000;
+                    if (this.invincibleTimer < 0) {
+                        this.invincibleTimer = 0;
+                    }
+                }
+            }
+
+            /**
+             * Check if Ghosty is currently invincible.
+             * @returns {boolean} True if invincibleTimer > 0
+             */
+            isInvincible() {
+                return this.invincibleTimer > 0;
+            }
+
+            /**
+             * Get the current opacity for rendering, accounting for invincibility pulsing.
+             * When invincible, pulses between minOpacity and maxOpacity every pulseInterval ms.
+             * @param {number} time - Current time in milliseconds (e.g., performance.now())
+             * @returns {number} Opacity value between 0.5 and 1.0 (or 1.0 if not invincible)
+             */
+            getOpacity(time) {
+                if (!this.isInvincible()) {
+                    return 1.0;
+                }
+                const interval = GAME_CONFIG.rendering.invincibilityPulseInterval;
+                const minOpacity = GAME_CONFIG.rendering.invincibilityMinOpacity;
+                const maxOpacity = GAME_CONFIG.rendering.invincibilityMaxOpacity;
+                // Use sine wave for smooth pulsing: cycle every (interval * 2) ms
+                const phase = Math.sin((time / interval) * Math.PI);
+                return minOpacity + (maxOpacity - minOpacity) * (0.5 + 0.5 * phase);
+            }
+
+            /**
+             * Render Ghosty on the canvas with interpolation and rotation.
+             * Uses sprite if loaded, otherwise falls back to a white circle.
+             * @param {CanvasRenderingContext2D} ctx - Canvas rendering context
+             * @param {number} interpolation - Interpolation factor [0, 1) between physics steps
+             * @param {PhysicsEngine} physicsEngine - Physics engine for position interpolation
+             * @param {number} time - Current time in milliseconds for opacity pulsing
+             */
+            render(ctx, interpolation, physicsEngine, time) {
+                // Compute interpolated Y position
+                const renderY = physicsEngine.interpolatePosition(this.prevY, this.y, interpolation) + this.bobOffset;
+                const renderX = this.x;
+
+                // Get opacity for invincibility pulsing
+                const opacity = this.getOpacity(time);
+
+                ctx.save();
+
+                // Apply opacity
+                ctx.globalAlpha = opacity;
+
+                // Translate to center of ghosty for rotation
+                const centerX = renderX + this.width / 2;
+                const centerY = renderY + this.height / 2;
+                ctx.translate(centerX, centerY);
+
+                // Apply rotation (convert degrees to radians)
+                const rotationRad = this.rotation * (Math.PI / 180);
+                ctx.rotate(rotationRad);
+
+                // Determine current frame based on time for continuous smooth animation loop
+                this.currentFrame = Math.floor(time / GAME_CONFIG.ghosty.frameDuration) % this.frames;
+
+                if (this.spriteLoaded && this.sprite) {
+                    // Draw specific frame from sprite sheet centered at origin
+                    const srcX = this.currentFrame * this.frameWidth;
+                    ctx.drawImage(
+                        this.sprite,
+                        srcX, 0, this.frameWidth, this.frameHeight,
+                        -this.width / 2, -this.height / 2, this.width, this.height
+                    );
+                } else {
+                    // Fallback: white circle
+                    ctx.fillStyle = '#FFFFFF';
+                    ctx.beginPath();
+                    ctx.arc(0, 0, Math.min(this.width, this.height) / 2, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+
+                ctx.restore();
+            }
+
+            /**
+             * Reset Ghosty to starting position with full invincibility.
+             * Used when the game restarts.
+             */
+            reset() {
+                this.x = GAME_CONFIG.canvas.width * GAME_CONFIG.ghosty.startXFraction;
+                this.y = GAME_CONFIG.canvas.height * GAME_CONFIG.ghosty.startYFraction;
+                this.vy = 0;
+                this.prevY = this.y;
+                this.rotation = 0;
+                this.invincibleTimer = GAME_CONFIG.rendering.invincibilityDuration;
+                this.bobOffset = 0;
+            }
+
+            /**
+             * Get the current state as a plain object (useful for collision detection).
+             * @returns {object} Ghosty state object
+             */
+            getState() {
+                return {
+                    x: this.x,
+                    y: this.y,
+                    vy: this.vy,
+                    prevY: this.prevY,
+                    rotation: this.rotation,
+                    width: this.width,
+                    height: this.height,
+                    hitboxRadius: this.hitboxRadius,
+                    invincibleTimer: this.invincibleTimer,
+                    bobOffset: this.bobOffset
+                };
+            }
+        }
+
+        // ============================================================
+        // CollisionDetector - Circle-vs-AABB Collision Detection
+        // Uses circular hitbox for Ghosty and axis-aligned bounding
+        // rectangles for walls. Skips checks during invincibility.
+        // Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7
+        // ============================================================
+
+        class CollisionDetector {
+            /**
+             * @param {typeof GAME_CONFIG.collision} config - Collision configuration object
+             */
+            constructor(config) {
+                this.config = config;
+            }
+
+            /**
+             * Compute Ghosty's circular hitbox from its current state.
+             * Center is at (x + width/2, y + height/2), radius from ghosty.hitboxRadius.
+             * @param {object} ghosty - Ghosty state object with x, y, width, height, hitboxRadius
+             * @returns {{ cx: number, cy: number, radius: number }}
+             */
+            getCircularHitbox(ghosty) {
+                const cx = ghosty.x + ghosty.width / 2;
+                const cy = ghosty.y + ghosty.height / 2;
+                const radius = ghosty.hitboxRadius;
+                return { cx, cy, radius };
+            }
+
+            /**
+             * Determine if a circle intersects an axis-aligned rectangle.
+             * Finds the nearest point on the rectangle to the circle center,
+             * then checks if the distance is less than the radius.
+             * @param {{ cx: number, cy: number, radius: number }} circle
+             * @param {{ x: number, y: number, width: number, height: number }} rect
+             * @returns {boolean} True if the circle and rectangle overlap
+             */
+            static circleRectIntersects(circle, rect) {
+                const closestX = Math.max(rect.x, Math.min(circle.cx, rect.x + rect.width));
+                const closestY = Math.max(rect.y, Math.min(circle.cy, rect.y + rect.height));
+                const dx = circle.cx - closestX;
+                const dy = circle.cy - closestY;
+                return (dx * dx + dy * dy) < (circle.radius * circle.radius);
+            }
+
+            /**
+             * Check collision between Ghosty's circular hitbox and all active wall AABBs.
+             * Skips check if Ghosty is invincible.
+             * @param {object} ghosty - Ghosty state object (or Ghosty instance with isInvincible())
+             * @param {Array} walls - Array of active WallPair objects
+             * @returns {{ collided: boolean, type: string, wallPair?: object }}
+             */
+            checkCollision(ghosty, walls) {
+                // Skip collision checks during invincibility frames
+                if (ghosty.isInvincible && ghosty.isInvincible()) {
+                    return { collided: false, type: 'none' };
+                }
+                if (ghosty.invincibleTimer > 0) {
+                    return { collided: false, type: 'none' };
+                }
+
+                const circle = this.getCircularHitbox(ghosty);
+
+                for (let i = 0; i < walls.length; i++) {
+                    const wall = walls[i];
+
+                    // Top wall rect: from canvas top to gap top edge
+                    const topRect = {
+                        x: wall.x,
+                        y: 0,
+                        width: wall.width,
+                        height: wall.gapCenterY - wall.gapHeight / 2
+                    };
+
+                    // Bottom wall rect: from gap bottom edge to canvas bottom
+                    const bottomY = wall.gapCenterY + wall.gapHeight / 2;
+                    const bottomRect = {
+                        x: wall.x,
+                        y: bottomY,
+                        width: wall.width,
+                        height: GAME_CONFIG.canvas.height - bottomY
+                    };
+
+                    if (CollisionDetector.circleRectIntersects(circle, topRect) ||
+                        CollisionDetector.circleRectIntersects(circle, bottomRect)) {
+                        return { collided: true, type: 'wall', wallPair: wall };
+                    }
+                }
+
+                return { collided: false, type: 'none' };
+            }
+
+            /**
+             * Check if Ghosty's bottom edge has reached the score bar top (floor boundary).
+             * @param {object} ghosty - Ghosty state object with y and height
+             * @param {number} scoreBarTop - Y coordinate of the score bar top edge
+             * @returns {{ collided: boolean, type: string }}
+             */
+            checkBoundary(ghosty, scoreBarTop) {
+                if (ghosty.y + ghosty.height >= scoreBarTop) {
+                    return { collided: true, type: 'floor' };
+                }
+                return { collided: false, type: 'none' };
+            }
+        }
+
+        // ============================================================
+        // WallManager - Wall Generation, Scrolling, and Recycling
+        // Generates, positions, scrolls, and recycles wall pairs via ObjectPool.
+        // Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 11.1, 11.3
+        // ============================================================
+
+        class WallManager {
+            /**
+             * @param {typeof GAME_CONFIG.walls} config - Wall configuration object
+             * @param {ObjectPool} pool - ObjectPool<WallPair> instance for wall pairs
+             */
+            constructor(config, pool) {
+                this.config = config;
+                this.pool = pool;
+                this._nextId = 1;
+                this._lastSpawnX = 0;
+                this._canvasWidth = GAME_CONFIG.canvas.width;
+                this._canvasHeight = GAME_CONFIG.canvas.height;
+            }
+
+            /**
+             * Spawn a new wall pair from the pool with randomized gap position.
+             * @param {number} canvasHeight - Height of the canvas
+             * @param {{ gapHeight: number, spacing: number }} difficulty - Current difficulty state
+             * @returns {object} The spawned WallPair object
+             */
+            spawnWall(canvasHeight, difficulty) {
+                const wall = this.pool.acquire();
+
+                wall.id = this._nextId++;
+                wall.x = this._lastSpawnX === 0
+                    ? this._canvasWidth
+                    : this._lastSpawnX + difficulty.spacing;
+
+                // Randomize gap center Y within [20%, 80%] of canvas height with 60px margin
+                const min = canvasHeight * this.config.gapCenterMinPercent;
+                const max = canvasHeight * this.config.gapCenterMaxPercent;
+                // Ensure at least gapCenterMinMargin from edges
+                const clampedMin = Math.max(min, this.config.gapCenterMinMargin);
+                const clampedMax = Math.min(max, canvasHeight - this.config.gapCenterMinMargin);
+                wall.gapCenterY = clampedMin + Math.random() * (clampedMax - clampedMin);
+
+                wall.gapHeight = difficulty.gapHeight;
+                wall.width = this.config.width;
+                wall.scored = false;
+                wall.active = true;
+
+                this._lastSpawnX = wall.x;
+
+                return wall;
+            }
+
+            /**
+             * Update all active walls: scroll left, spawn new walls as needed, recycle offscreen.
+             * @param {number} dt - Delta time in seconds
+             * @param {{ currentSpeed: number, gapHeight: number, spacing: number }} difficulty - Current difficulty state
+             */
+            update(dt, difficulty) {
+                const activeWalls = this.pool.getActive();
+
+                // Scroll all active walls to the left
+                for (let i = 0; i < activeWalls.length; i++) {
+                    activeWalls[i].x -= difficulty.currentSpeed * dt;
+                }
+
+                // Determine if we need to spawn a new wall
+                // Spawn when the last wall's x position is less than canvasWidth - spacing
+                if (activeWalls.length === 0) {
+                    this.spawnWall(this._canvasHeight, difficulty);
+                } else {
+                    // Find the rightmost wall
+                    let rightmostX = -Infinity;
+                    for (let i = 0; i < activeWalls.length; i++) {
+                        if (activeWalls[i].x > rightmostX) {
+                            rightmostX = activeWalls[i].x;
+                        }
+                    }
+
+                    if (rightmostX < this._canvasWidth - difficulty.spacing) {
+                        this._lastSpawnX = rightmostX;
+                        this.spawnWall(this._canvasHeight, difficulty);
+                    }
+                }
+
+                // Recycle walls that have scrolled off-screen
+                this.recycleOffscreen();
+            }
+
+            /**
+             * Release walls that have scrolled completely off the left edge back to pool.
+             */
+            recycleOffscreen() {
+                const activeWalls = this.pool.getActive();
+                // Iterate in reverse to safely remove during iteration
+                for (let i = activeWalls.length - 1; i >= 0; i--) {
+                    const wall = activeWalls[i];
+                    if (wall.x + wall.width < 0) {
+                        this.pool.release(wall);
+                    }
+                }
+            }
+
+            /**
+             * Release all active walls back to the pool and reset state.
+             */
+            reset() {
+                this.pool.releaseAll();
+                this._lastSpawnX = 0;
+                this._nextId = 1;
+            }
+
+            /**
+             * Get all currently active wall pairs.
+             * @returns {object[]} Array of active WallPair objects
+             */
+            getActiveWalls() {
+                return this.pool.getActive();
+            }
+
+            /**
+             * Render all active walls on the canvas.
+             * Draws green rectangles with darker caps at the gap openings.
+             * Batched: all wall bodies first, then all caps.
+             * @param {CanvasRenderingContext2D} ctx - Canvas rendering context
+             */
+            render(ctx) {
+                const activeWalls = this.pool.getActive();
+                const capOverhang = this.config.capOverhang;
+                const capHeight = this.config.capHeight;
+
+                // Batch 1: Draw all wall bodies (green)
+                ctx.fillStyle = this.config.wallColor;
+                for (let i = 0; i < activeWalls.length; i++) {
+                    const wall = activeWalls[i];
+                    const topWallHeight = wall.gapCenterY - wall.gapHeight / 2;
+                    const bottomWallY = wall.gapCenterY + wall.gapHeight / 2;
+                    const bottomWallHeight = this._canvasHeight - bottomWallY;
+
+                    // Top wall body
+                    ctx.fillRect(wall.x, 0, wall.width, topWallHeight);
+                    // Bottom wall body
+                    ctx.fillRect(wall.x, bottomWallY, wall.width, bottomWallHeight);
+                }
+
+                // Batch 2: Draw all caps (darker green)
+                ctx.fillStyle = this.config.capColor;
+                for (let i = 0; i < activeWalls.length; i++) {
+                    const wall = activeWalls[i];
+                    const topWallHeight = wall.gapCenterY - wall.gapHeight / 2;
+                    const bottomWallY = wall.gapCenterY + wall.gapHeight / 2;
+
+                    // Top wall cap (at the bottom of the top wall, extends beyond wall width)
+                    ctx.fillRect(
+                        wall.x - capOverhang,
+                        topWallHeight - capHeight,
+                        wall.width + capOverhang * 2,
+                        capHeight
+                    );
+
+                    // Bottom wall cap (at the top of the bottom wall, extends beyond wall width)
+                    ctx.fillRect(
+                        wall.x - capOverhang,
+                        bottomWallY,
+                        wall.width + capOverhang * 2,
+                        capHeight
+                    );
+                }
+            }
+        }
+
+        /**
+         * Factory function for creating WallPair objects for the ObjectPool.
+         * @returns {object} A new WallPair with default values
+         */
+        function createWallPair() {
+            return {
+                id: 0,
+                x: 0,
+                gapCenterY: 0,
+                gapHeight: 0,
+                scored: false,
+                width: GAME_CONFIG.walls.width,
+                active: false
+            };
+        }
+
+        /**
+         * Reset function for WallPair objects when returned to the ObjectPool.
+         * @param {object} wall - The WallPair to reset
+         */
+        function resetWallPair(wall) {
+            wall.id = 0;
+            wall.x = 0;
+            wall.gapCenterY = 0;
+            wall.gapHeight = 0;
+            wall.scored = false;
+            wall.width = GAME_CONFIG.walls.width;
+            wall.active = false;
+        }
+
+        // ============================================================
+        // ScoreManager - Score Tracking and localStorage Persistence
+        // Tracks current score, high score, persistence, and score events.
+        // Uses dual protection (wall.scored flag + Set of scored IDs).
+        // Requirements: 5.1, 5.2, 5.3, 5.4, 5.5, 5.6, 5.7, 5.8, 5.9
+        // ============================================================
+
+        class ScoreManager {
+            /**
+             * @param {string} storageKey - localStorage key for high score persistence
+             */
+            constructor(storageKey) {
+                this.storageKey = storageKey;
+                this.currentScore = 0;
+                this.highScore = this.loadHighScore();
+                this.scoredWalls = new Set(); // IDs of walls already scored (dual protection)
+                this.isNewRecord = false;
+                this.newRecordFlashTimer = 0;
+            }
+
+            /**
+             * Check if Ghosty has passed any wall and increment score.
+             * Uses dual protection: wall.scored flag AND scoredWalls Set.
+             * Score increments when Ghosty's horizontal center passes the wall's right edge.
+             * @param {object} ghosty - Ghosty state with x, width properties
+             * @param {Array} walls - Array of active wall pair objects with x, width, id, scored
+             * @returns {boolean} True if a point was scored this frame
+             */
+            checkScore(ghosty, walls) {
+                const ghostyCenterX = ghosty.x + ghosty.width / 2;
+
+                for (let i = 0; i < walls.length; i++) {
+                    const wall = walls[i];
+                    const wallRightEdge = wall.x + wall.width;
+
+                    if (ghostyCenterX > wallRightEdge && !wall.scored && !this.scoredWalls.has(wall.id)) {
+                        // Dual protection: mark both
+                        wall.scored = true;
+                        this.scoredWalls.add(wall.id);
+                        this.currentScore++;
+
+                        // Check if new record
+                        if (this.currentScore > this.highScore) {
+                            this.isNewRecord = true;
+                            this.newRecordFlashTimer = GAME_CONFIG.rendering.newRecordFlashDuration;
+                        }
+
+                        return true; // Scored!
+                    }
+                }
+
+                return false;
+            }
+
+            /**
+             * Load high score from localStorage with graceful fallback.
+             * Returns 0 if localStorage is unavailable, value is missing, or corrupted.
+             * @returns {number} The stored high score or 0
+             */
+            loadHighScore() {
+                try {
+                    return parseInt(localStorage.getItem(this.storageKey)) || 0;
+                } catch (e) {
+                    return 0;
+                }
+            }
+
+            /**
+             * Save the current high score to localStorage.
+             * Silently fails if localStorage is unavailable.
+             */
+            saveHighScore() {
+                try {
+                    localStorage.setItem(this.storageKey, this.highScore.toString());
+                } catch (e) {
+                    // Ignore storage errors
+                }
+            }
+
+            /**
+             * Update high score to the maximum of current score and stored high score.
+             * Persists the result to localStorage.
+             */
+            updateHighScore() {
+                this.highScore = Math.max(this.currentScore, this.highScore);
+                this.saveHighScore();
+            }
+
+            /**
+             * Reset score state for a new game session.
+             * Current score resets to 0, scored walls cleared, high score reloaded from storage.
+             */
+            reset() {
+                this.currentScore = 0;
+                this.scoredWalls.clear();
+                this.isNewRecord = false;
+                this.newRecordFlashTimer = 0;
+                // Preserve high score by reloading from storage
+                this.highScore = this.loadHighScore();
+            }
+
+            /**
+             * Update the new record flash timer countdown.
+             * @param {number} dt - Delta time in seconds
+             */
+            updateFlashTimer(dt) {
+                if (this.newRecordFlashTimer > 0) {
+                    this.newRecordFlashTimer -= dt * 1000;
+                    if (this.newRecordFlashTimer < 0) {
+                        this.newRecordFlashTimer = 0;
+                    }
+                }
+            }
+        }
+
+        // ============================================================
+        // AudioManager - Sound Effect Loading, Playback, and Fallback
+        // Preloads audio assets, plays on demand with try-catch for
+        // browser autoplay policy, and gracefully degrades if assets
+        // fail to load.
+        // Requirements: 2.3, 4.8, 5.3, 7.1, 7.2, 7.3
+        // ============================================================
+
+        class AudioManager {
+            /**
+             * @param {typeof GAME_CONFIG.audio} config - Audio configuration object
+             */
+            constructor(config) {
+                this.config = config;
+                this.sounds = new Map(); // name → HTMLAudioElement
+                this.loaded = false;
+                this._audioContext = null; // For generated score chime
+            }
+
+            /**
+             * Preload all sound assets defined in config.
+             * Creates HTMLAudioElement for each file-based sound,
+             * and an AudioContext-based beep for the score chime if no file is specified.
+             * Logs warnings on failure but continues without sound.
+             * @returns {Promise<void>}
+             */
+            preload() {
+                const assets = [
+                    { name: 'jump', path: this.config.jumpSound },
+                    { name: 'gameOver', path: this.config.gameOverSound }
+                ];
+
+                const volume = this.config.sfxVolume * this.config.masterVolume;
+
+                const loadPromises = assets.map(asset => {
+                    return new Promise((resolve) => {
+                        if (!asset.path) {
+                            resolve();
+                            return;
+                        }
+                        const audio = new Audio(asset.path);
+                        audio.volume = volume;
+                        audio.addEventListener('canplaythrough', () => {
+                            this.sounds.set(asset.name, audio);
+                            resolve();
+                        }, { once: true });
+                        audio.addEventListener('error', () => {
+                            console.warn(`Failed to load sound: ${asset.path}`);
+                            resolve();
+                        }, { once: true });
+                        // Trigger loading
+                        audio.load();
+                    });
+                });
+
+                // Handle score chime: generate via AudioContext or skip
+                const scorePromise = new Promise((resolve) => {
+                    if (this.config.scoreSound) {
+                        // Load from file
+                        const audio = new Audio(this.config.scoreSound);
+                        audio.volume = volume;
+                        audio.addEventListener('canplaythrough', () => {
+                            this.sounds.set('score', audio);
+                            resolve();
+                        }, { once: true });
+                        audio.addEventListener('error', () => {
+                            console.warn(`Failed to load sound: ${this.config.scoreSound}`);
+                            resolve();
+                        }, { once: true });
+                        audio.load();
+                    } else {
+                        // Generate a simple beep using AudioContext
+                        try {
+                            this._audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                            // Store a marker so play() knows to use AudioContext for score
+                            this.sounds.set('score', null); // null signals generated chime
+                        } catch (e) {
+                            console.warn('AudioContext not available for score chime');
+                        }
+                        resolve();
+                    }
+                });
+
+                return Promise.all([...loadPromises, scorePromise]).then(() => {
+                    this.loaded = true;
+                });
+            }
+
+            /**
+             * Play a sound by name. Wrapped in try-catch to handle browser
+             * autoplay policy restrictions gracefully.
+             * For the 'score' sound with no file, generates a short beep via AudioContext.
+             * @param {string} soundName - Name of the sound ('jump', 'gameOver', 'score')
+             */
+            play(soundName) {
+                if (!this.sounds.has(soundName)) return;
+
+                const sound = this.sounds.get(soundName);
+
+                // Generated score chime via AudioContext
+                if (soundName === 'score' && sound === null) {
+                    this._playGeneratedChime();
+                    return;
+                }
+
+                if (!sound) return;
+
+                try {
+                    sound.currentTime = 0;
+                    sound.play();
+                } catch (e) {
+                    // Browser autoplay policy blocked playback — ignore
+                }
+            }
+
+            /**
+             * Generate and play a short beep/chime using AudioContext oscillator.
+             * Duration: 80ms, frequency: 880Hz (A5), type: sine.
+             * @private
+             */
+            _playGeneratedChime() {
+                if (!this._audioContext) return;
+
+                try {
+                    const ctx = this._audioContext;
+                    const oscillator = ctx.createOscillator();
+                    const gainNode = ctx.createGain();
+
+                    oscillator.connect(gainNode);
+                    gainNode.connect(ctx.destination);
+
+                    oscillator.type = 'sine';
+                    oscillator.frequency.value = 880; // A5 note
+                    gainNode.gain.value = this.config.sfxVolume * this.config.masterVolume;
+
+                    const now = ctx.currentTime;
+                    oscillator.start(now);
+                    // Quick fade out for a pleasant chime
+                    gainNode.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
+                    oscillator.stop(now + 0.08);
+                } catch (e) {
+                    // Browser policy or AudioContext issue — ignore
+                }
+            }
+
+            /**
+             * Stop a specific sound by name.
+             * Pauses the audio and resets playback position to the start.
+             * @param {string} soundName - Name of the sound to stop
+             */
+            stop(soundName) {
+                const sound = this.sounds.get(soundName);
+                if (sound) {
+                    sound.pause();
+                    sound.currentTime = 0;
+                }
+            }
+
+            /**
+             * Stop all currently playing sounds.
+             * Iterates the sounds Map and stops each HTMLAudioElement.
+             */
+            stopAll() {
+                this.sounds.forEach((sound, name) => {
+                    if (sound) {
+                        sound.pause();
+                        sound.currentTime = 0;
+                    }
+                });
+            }
+        }
+
+        // ============================================================
+        // Particle Factory and Reset Functions
+        // Used by ObjectPool<Particle> for pre-allocation and recycling.
+        // ============================================================
+
+        function createParticle() {
+            return {
+                x: 0,
+                y: 0,
+                vx: 0,
+                vy: 0,
+                radius: 2,
+                opacity: 0,
+                lifetime: 400,
+                elapsed: 0,
+                active: false
+            };
+        }
+
+        function resetParticle(p) {
+            p.x = 0;
+            p.y = 0;
+            p.vx = 0;
+            p.vy = 0;
+            p.radius = 2;
+            p.opacity = 0;
+            p.lifetime = 400;
+            p.elapsed = 0;
+            p.active = false;
+        }
+
+        // ============================================================
+        // ParticleSystem - Trail and Burst Particle Effects
+        // Manages particle emission, update, and recycling via ObjectPool.
+        // Requirements: 7.4, 7.5, 7.6, 11.2, 11.4
+        // ============================================================
+
+        class ParticleSystem {
+            /**
+             * @param {typeof GAME_CONFIG.particles} config - Particle configuration object
+             * @param {ObjectPool} pool - ObjectPool<Particle> instance for acquiring/releasing particles
+             */
+            constructor(config, pool) {
+                this.config = config;
+                this.pool = pool;
+            }
+
+            /**
+             * Emit trail particles behind Ghosty's position.
+             * Acquires 3-5 particles from the pool with slight random spread.
+             * @param {number} x - Ghosty's x position (trailing edge)
+             * @param {number} y - Ghosty's y position (center)
+             */
+            emitTrail(x, y) {
+                const config = this.config;
+                const count = Math.floor(Math.random() * (config.trailCountMax - config.trailCountMin + 1)) + config.trailCountMin;
+
+                for (let i = 0; i < count; i++) {
+                    const particle = this.pool.acquire();
+                    particle.x = x;
+                    particle.y = y + (Math.random() * 2 - 1) * config.spawnOffsetY;
+                    particle.vx = -20;
+                    particle.vy = Math.random() * 20 - 10;
+                    particle.radius = Math.random() * (config.radiusMax - config.radiusMin) + config.radiusMin;
+                    particle.opacity = config.initialOpacity;
+                    particle.lifetime = config.lifetimeMs;
+                    particle.elapsed = 0;
+                    particle.active = true;
+                }
+            }
+
+            /**
+             * Emit burst particles downward from Ghosty on flap.
+             * Acquires 5-8 particles from the pool with downward velocity.
+             * @param {number} x - Ghosty's x position
+             * @param {number} y - Ghosty's y position
+             */
+            emitBurst(x, y) {
+                const config = this.config;
+                const count = Math.floor(Math.random() * (config.burstCountMax - config.burstCountMin + 1)) + config.burstCountMin;
+
+                for (let i = 0; i < count; i++) {
+                    const particle = this.pool.acquire();
+                    particle.x = x;
+                    particle.y = y;
+                    particle.vx = Math.random() * 60 - 30;
+                    particle.vy = Math.random() * 40 + 20;
+                    particle.radius = Math.random() * (config.radiusMax - config.radiusMin) + config.radiusMin;
+                    particle.opacity = config.initialOpacity;
+                    particle.lifetime = config.lifetimeMs;
+                    particle.elapsed = 0;
+                    particle.active = true;
+                }
+            }
+
+            /**
+             * Update all active particles: advance elapsed time, compute fading opacity,
+             * and update positions based on velocity.
+             * @param {number} dt - Delta time in seconds
+             */
+            update(dt) {
+                const dtMs = dt * 1000;
+                const config = this.config;
+                const activeParticles = this.pool.getActive();
+
+                for (let i = 0; i < activeParticles.length; i++) {
+                    const particle = activeParticles[i];
+                    if (!particle.active) continue;
+
+                    particle.elapsed += dtMs;
+                    particle.opacity = config.initialOpacity * (1 - particle.elapsed / particle.lifetime);
+                    particle.x += particle.vx * dt;
+                    particle.y += particle.vy * dt;
+                }
+
+                this.recycleExpired();
+            }
+
+            /**
+             * Release particles whose lifetime has expired (opacity <= 0) back to the pool.
+             * Iterates backwards to safely remove while iterating.
+             */
+            recycleExpired() {
+                const activeParticles = this.pool.getActive();
+
+                for (let i = activeParticles.length - 1; i >= 0; i--) {
+                    const particle = activeParticles[i];
+                    if (particle.elapsed >= particle.lifetime || particle.opacity <= 0) {
+                        this.pool.release(particle);
+                    }
+                }
+            }
+
+            /**
+             * Reset the particle system by releasing all active particles back to the pool.
+             */
+            reset() {
+                this.pool.releaseAll();
+            }
+
+            /**
+             * Get all currently active particles for rendering.
+             * @returns {Array} Array of active particle objects
+             */
+            getActiveParticles() {
+                return this.pool.getActive();
+            }
+        }
+
+        // ============================================================
+        // EffectsManager - Game-Over Visual Effects
+        // Manages screen shake, tumble rotation, white flash, and
+        // score popups. All timing from GAME_CONFIG.rendering.
+        // Requirements: 4.9, 4.10, 4.11, 4.12, 5.2
+        // ============================================================
+
+        class EffectsManager {
+            /**
+             * @param {typeof GAME_CONFIG.rendering} config - Rendering configuration object
+             */
+            constructor(config) {
+                this.config = config;
+
+                // Screen shake state
+                this.shake = {
+                    active: false,
+                    amplitude: config.screenShakeAmplitude,
+                    duration: config.screenShakeDuration,
+                    elapsed: 0
+                };
+
+                // Tumble animation state
+                this.tumble = {
+                    active: false,
+                    rotation: 0,
+                    duration: config.tumbleDuration,
+                    elapsed: 0
+                };
+
+                // White flash state
+                this.flash = {
+                    active: false,
+                    opacity: config.whiteFlashOpacity,
+                    duration: config.whiteFlashDuration,
+                    elapsed: 0
+                };
+
+                // Score popups array
+                this.popups = [];
+            }
+
+            // --- Screen Shake ---
+
+            /**
+             * Activate the screen shake effect.
+             */
+            triggerShake() {
+                this.shake.active = true;
+                this.shake.elapsed = 0;
+            }
+
+            /**
+             * Update shake timer. Deactivates when duration is exceeded.
+             * @param {number} dt - Delta time in seconds
+             */
+            updateShake(dt) {
+                if (!this.shake.active) return;
+                this.shake.elapsed += dt * 1000;
+                if (this.shake.elapsed >= this.shake.duration) {
+                    this.shake.active = false;
+                    this.shake.elapsed = 0;
+                }
+            }
+
+            /**
+             * Get the current shake offset for rendering displacement.
+             * Returns random x/y within amplitude if active, otherwise {x:0, y:0}.
+             * @returns {{x: number, y: number}}
+             */
+            getShakeOffset() {
+                if (!this.shake.active) {
+                    return { x: 0, y: 0 };
+                }
+                const amp = this.shake.amplitude;
+                return {
+                    x: (Math.random() * 2 - 1) * amp,
+                    y: (Math.random() * 2 - 1) * amp
+                };
+            }
+
+            // --- Tumble Animation ---
+
+            /**
+             * Activate the tumble rotation effect.
+             */
+            triggerTumble() {
+                this.tumble.active = true;
+                this.tumble.rotation = 0;
+                this.tumble.elapsed = 0;
+            }
+
+            /**
+             * Update tumble timer and compute current rotation.
+             * Deactivates when duration is exceeded.
+             * @param {number} dt - Delta time in seconds
+             */
+            updateTumble(dt) {
+                if (!this.tumble.active) return;
+                this.tumble.elapsed += dt * 1000;
+                if (this.tumble.elapsed >= this.tumble.duration) {
+                    this.tumble.active = false;
+                    this.tumble.rotation = this.config.tumbleRotation;
+                } else {
+                    this.tumble.rotation = (this.tumble.elapsed / this.tumble.duration) * this.config.tumbleRotation;
+                }
+            }
+
+            /**
+             * Get the current tumble rotation in degrees.
+             * @returns {number} Rotation degrees (0 to 360)
+             */
+            getTumbleRotation() {
+                return this.tumble.rotation;
+            }
+
+            // --- White Flash ---
+
+            /**
+             * Activate the white flash overlay effect.
+             */
+            triggerFlash() {
+                this.flash.active = true;
+                this.flash.opacity = this.config.whiteFlashOpacity;
+                this.flash.elapsed = 0;
+            }
+
+            /**
+             * Update flash timer and fade opacity. Deactivates when duration is exceeded.
+             * @param {number} dt - Delta time in seconds
+             */
+            updateFlash(dt) {
+                if (!this.flash.active) return;
+                this.flash.elapsed += dt * 1000;
+                if (this.flash.elapsed >= this.flash.duration) {
+                    this.flash.active = false;
+                    this.flash.opacity = 0;
+                } else {
+                    // Fade from initial opacity to 0 over duration
+                    this.flash.opacity = this.config.whiteFlashOpacity * (1 - this.flash.elapsed / this.flash.duration);
+                }
+            }
+
+            /**
+             * Render the white flash overlay on the canvas if active.
+             * @param {CanvasRenderingContext2D} ctx - The canvas 2D context
+             */
+            renderFlash(ctx) {
+                if (!this.flash.active) return;
+                ctx.save();
+                ctx.globalAlpha = this.flash.opacity;
+                ctx.fillStyle = 'rgba(255, 255, 255, 1)';
+                ctx.fillRect(0, 0, GAME_CONFIG.canvas.width, GAME_CONFIG.canvas.height);
+                ctx.restore();
+            }
+
+            // --- Score Popups ---
+
+            /**
+             * Add a new score popup at the given position.
+             * @param {number} x - X position for the popup
+             * @param {number} y - Y position for the popup
+             */
+            addPopup(x, y) {
+                this.popups.push({
+                    x: x,
+                    y: y,
+                    opacity: 1,
+                    offsetY: 0,
+                    lifetime: this.config.scorePopupDuration,
+                    elapsed: 0
+                });
+            }
+
+            /**
+             * Update all score popups: advance elapsed, compute opacity fade and rise offset.
+             * Removes expired popups.
+             * @param {number} dt - Delta time in seconds
+             */
+            updatePopups(dt) {
+                const dtMs = dt * 1000;
+
+                for (let i = this.popups.length - 1; i >= 0; i--) {
+                    const popup = this.popups[i];
+                    popup.elapsed += dtMs;
+
+                    if (popup.elapsed >= popup.lifetime) {
+                        this.popups.splice(i, 1);
+                    } else {
+                        const progress = popup.elapsed / popup.lifetime;
+                        popup.opacity = 1 - progress;
+                        popup.offsetY = progress * this.config.scorePopupRise;
+                    }
+                }
+            }
+
+            /**
+             * Render all active score popups as "+1" text with fading and rising.
+             * @param {CanvasRenderingContext2D} ctx - The canvas 2D context
+             */
+            renderPopups(ctx) {
+                for (let i = 0; i < this.popups.length; i++) {
+                    const popup = this.popups[i];
+                    ctx.save();
+                    ctx.globalAlpha = popup.opacity;
+                    ctx.fillStyle = '#FFFFFF';
+                    ctx.font = 'bold 18px Arial, sans-serif';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.strokeStyle = '#000000';
+                    ctx.lineWidth = 2;
+                    const drawY = popup.y - popup.offsetY;
+                    ctx.strokeText('+1', popup.x, drawY);
+                    ctx.fillText('+1', popup.x, drawY);
+                    ctx.restore();
+                }
+            }
+
+            // --- Combined Methods ---
+
+            /**
+             * Update all effects in a single call.
+             * @param {number} dt - Delta time in seconds
+             */
+            update(dt) {
+                this.updateShake(dt);
+                this.updateTumble(dt);
+                this.updateFlash(dt);
+                this.updatePopups(dt);
+            }
+
+            /**
+             * Trigger all game-over effects at once: shake, tumble, and flash.
+             */
+            triggerGameOver() {
+                this.triggerShake();
+                this.triggerTumble();
+                this.triggerFlash();
+            }
+
+            /**
+             * Reset all effects to inactive state and clear popups.
+             */
+            reset() {
+                this.shake.active = false;
+                this.shake.elapsed = 0;
+
+                this.tumble.active = false;
+                this.tumble.rotation = 0;
+                this.tumble.elapsed = 0;
+
+                this.flash.active = false;
+                this.flash.opacity = 0;
+                this.flash.elapsed = 0;
+
+                this.popups = [];
+            }
+        }
+
+        // ============================================================
+        // CloudSystem - Parallax Background Clouds
+        // Decorative semi-transparent clouds at multiple depth layers.
+        // Scrolls during Menu, Ready, and Playing states for ambient motion.
+        // Requirements: 8.6, 8.7, 8.8, 8.9
+        // ============================================================
+
+        class CloudSystem {
+            /**
+             * @param {typeof GAME_CONFIG.clouds} config - Cloud configuration object
+             */
+            constructor(config) {
+                this.config = config;
+                this.clouds = [];
+                this._canvasWidth = GAME_CONFIG.canvas.width;
+                this._canvasHeight = GAME_CONFIG.canvas.height;
+
+                // Initialize 6-9 clouds across 3 layers (2-3 per layer)
+                this._initializeClouds();
+            }
+
+            /**
+             * Initialize clouds spread across all depth layers.
+             * Creates 2-3 clouds per layer, distributed across the canvas width.
+             * @private
+             */
+            _initializeClouds() {
+                this.clouds = [];
+
+                for (let layer = 0; layer < this.config.layerCount; layer++) {
+                    // 2-3 clouds per layer
+                    const count = 2 + Math.floor(Math.random() * 2);
+                    for (let i = 0; i < count; i++) {
+                        const cloud = this.spawnCloud(layer);
+                        // Distribute across the full canvas width for initial placement
+                        cloud.x = Math.random() * this._canvasWidth;
+                        this.clouds.push(cloud);
+                    }
+                }
+            }
+
+            /**
+             * Create a new cloud object for the given depth layer.
+             * @param {number} layer - Depth layer index (0 = farthest, layerCount-1 = nearest)
+             * @returns {{ x: number, y: number, width: number, height: number, layer: number, opacity: number, speedFactor: number }}
+             */
+            spawnCloud(layer) {
+                const config = this.config;
+                const x = this._canvasWidth + Math.random() * 100;
+                const y = Math.random() * (this._canvasHeight * config.spawnRegionFraction);
+                const width = 60 + Math.random() * 60;   // 60-120px
+                const height = 20 + Math.random() * 20;  // 20-40px
+                const opacity = config.minOpacity + Math.random() * (config.maxOpacity - config.minOpacity);
+                const speedFactor = config.speedFactors[layer];
+
+                return { x, y, width, height, layer, opacity, speedFactor };
+            }
+
+            /**
+             * Update cloud positions. Scrolls each cloud left based on wallSpeed and its speedFactor.
+             * When a cloud scrolls off the left edge, respawn at the right with a random offset.
+             * @param {number} dt - Delta time in seconds
+             * @param {number} wallSpeed - Current wall scroll speed in px/s
+             */
+            update(dt, wallSpeed) {
+                for (let i = 0; i < this.clouds.length; i++) {
+                    const cloud = this.clouds[i];
+                    cloud.x -= wallSpeed * cloud.speedFactor * dt;
+
+                    // If cloud has scrolled completely off the left edge, respawn at the right
+                    if (cloud.x + cloud.width < 0) {
+                        cloud.x = this._canvasWidth + Math.random() * 100;
+                        cloud.y = Math.random() * (this._canvasHeight * this.config.spawnRegionFraction);
+                        cloud.width = 60 + Math.random() * 60;
+                        cloud.height = 20 + Math.random() * 20;
+                        cloud.opacity = this.config.minOpacity + Math.random() * (this.config.maxOpacity - this.config.minOpacity);
+                    }
+                }
+            }
+
+            /**
+             * Render all clouds as semi-transparent white ellipses.
+             * Uses a single fillStyle and varies globalAlpha per cloud.
+             * @param {CanvasRenderingContext2D} ctx - Canvas rendering context
+             */
+            render(ctx) {
+                ctx.fillStyle = '#FFFFFF';
+
+                for (let i = 0; i < this.clouds.length; i++) {
+                    const cloud = this.clouds[i];
+                    ctx.globalAlpha = cloud.opacity;
+                    ctx.beginPath();
+                    ctx.ellipse(
+                        cloud.x + cloud.width / 2,
+                        cloud.y + cloud.height / 2,
+                        cloud.width / 2,
+                        cloud.height / 2,
+                        0, 0, Math.PI * 2
+                    );
+                    ctx.fill();
+                }
+
+                // Reset globalAlpha to default
+                ctx.globalAlpha = 1.0;
+            }
+
+            /**
+             * Reset all clouds to new random positions (used on game restart).
+             */
+            reset() {
+                this.clouds = [];
+                this._initializeClouds();
+            }
+        }
+
+        // ============================================================
+        // Renderer - Batched Draw Pipeline
+        // Handles all Canvas drawing with batched draw calls grouped
+        // by type. Minimizes ctx.save()/ctx.restore() and state changes.
+        // Render order: background → clouds → walls → score bubbles →
+        //   ghosty → particles → popups → HUD
+        // Requirements: 8.1, 8.2, 8.3, 8.4, 11.5, 11.6
+        // ============================================================
+
+        class Renderer {
+            /**
+             * @param {CanvasRenderingContext2D} ctx - Canvas 2D rendering context
+             * @param {typeof GAME_CONFIG.rendering} config - Rendering configuration object
+             */
+            constructor(ctx, config) {
+                this.ctx = ctx;
+                this.config = config;
+                this.canvasWidth = GAME_CONFIG.canvas.width;
+                this.canvasHeight = GAME_CONFIG.canvas.height;
+                
+                // Load coin sprite
+                this.coinSpriteLoaded = false;
+                this.coinSprite = new Image();
+                this.coinSprite.onload = () => { this.coinSpriteLoaded = true; };
+                this.coinSprite.src = 'assets/ghostly_coin.png';
+            }
+
+            /**
+             * Main render method called each frame with all game state.
+             * Dispatches to sub-methods in the correct pipeline order.
+             * @param {object} state - All game state needed for rendering
+             * @param {object} state.ghosty - Ghosty instance
+             * @param {object} state.wallManager - WallManager instance
+             * @param {object} state.cloudSystem - CloudSystem instance (may be null)
+             * @param {object} state.particleSystem - ParticleSystem instance (may be null)
+             * @param {object} state.effectsManager - EffectsManager instance (may be null)
+             * @param {object} state.scoreManager - ScoreManager instance
+             * @param {object} state.physics - PhysicsEngine instance
+             * @param {number} state.interpolation - Interpolation factor [0, 1)
+             * @param {number} state.time - Current time in ms (performance.now())
+             * @param {string} state.gameState - Current game state string
+             */
+            render(state) {
+                const ctx = this.ctx;
+                const {
+                    ghosty,
+                    wallManager,
+                    cloudSystem,
+                    particleSystem,
+                    effectsManager,
+                    scoreManager,
+                    physics,
+                    interpolation,
+                    time,
+                    gameState
+                } = state;
+
+                // Apply screen shake offset if active
+                this.renderEffects(effectsManager);
+
+                // 1. Background
+                this.renderBackground(ctx);
+
+                // 2. Clouds
+                this.renderClouds(cloudSystem);
+
+                // 3. Walls (batched rendering via WallManager)
+                this.renderWalls(wallManager);
+
+                // 4. Score bubbles between wall gaps
+                if (wallManager) {
+                    this.renderScoreBubbles(wallManager.getActiveWalls());
+                }
+
+                // 5. Ghosty
+                if (ghosty) {
+                    this.renderGhosty(ghosty, interpolation, physics, time);
+                }
+
+                // 6. Particles (batched)
+                this.renderParticles(particleSystem);
+
+                // 7. Popups (score popups)
+                this.renderPopups(effectsManager);
+
+                // 8. HUD - in-game score display
+                if (scoreManager) {
+                    this.renderHUD(scoreManager.currentScore, gameState);
+
+                    // Score bar at bottom
+                    this.renderScoreDisplay(
+                        scoreManager.currentScore,
+                        scoreManager.highScore,
+                        scoreManager.isNewRecord,
+                        scoreManager.newRecordFlashTimer
+                    );
+                }
+
+                // 9. State-specific overlays
+                if (gameState === GameState.Menu) {
+                    const highScore = scoreManager ? scoreManager.highScore : 0;
+                    this.renderMenuScreen(highScore, ghosty ? ghosty.bobOffset : 0);
+                } else if (gameState === GameState.Ready) {
+                    this.renderReadyScreen();
+                } else if (gameState === GameState.Paused) {
+                    this.renderPauseOverlay();
+                } else if (gameState === GameState.Game_Over) {
+                    this.renderGameOverScreen(
+                        scoreManager ? scoreManager.currentScore : 0,
+                        scoreManager ? scoreManager.highScore : 0
+                    );
+                }
+
+                // Reset any transforms applied by screen shake
+                if (effectsManager && effectsManager.shake && effectsManager.shake.active) {
+                    ctx.setTransform(1, 0, 0, 1, 0, 0);
+                }
+            }
+
+            /**
+             * Render the background fill color.
+             * @param {CanvasRenderingContext2D} ctx
+             */
+            renderBackground(ctx) {
+                ctx.fillStyle = GAME_CONFIG.canvas.backgroundColor;
+                ctx.fillRect(0, 0, this.canvasWidth, this.canvasHeight);
+            }
+
+            /**
+             * Render clouds via the CloudSystem's own render method.
+             * @param {object|null} cloudSystem - CloudSystem instance
+             */
+            renderClouds(cloudSystem) {
+                if (cloudSystem) {
+                    cloudSystem.render(this.ctx);
+                }
+            }
+
+            /**
+             * Render walls via the WallManager's batched render method.
+             * WallManager.render() already batches: all bodies first, then all caps.
+             * @param {object|null} wallManager - WallManager instance
+             */
+            renderWalls(wallManager) {
+                if (wallManager) {
+                    wallManager.render(this.ctx);
+                }
+            }
+
+            /**
+             * Render score bubbles as small white rounded rects in wall gap centers.
+             * @param {Array} walls - Array of active wall pair objects
+             */
+            renderScoreBubbles(walls) {
+                if (!walls || walls.length === 0) return;
+
+                const ctx = this.ctx;
+
+                for (let i = 0; i < walls.length; i++) {
+                    const wall = walls[i];
+                    if (wall.scored) continue; // Don't show bubble for already-scored walls
+
+                    const bubbleX = wall.x + wall.width / 2;
+                    const bubbleY = wall.gapCenterY;
+                    const bubbleW = 40;
+                    const bubbleH = 40;
+
+                    const x = bubbleX - bubbleW / 2;
+                    const y = bubbleY - bubbleH / 2;
+
+                    if (this.coinSpriteLoaded && this.coinSprite) {
+                        ctx.drawImage(this.coinSprite, x, y, bubbleW, bubbleH);
+                    } else {
+                        // Fallback rounded rect
+                        const radius = 4;
+                        ctx.fillStyle = '#FFFFFF';
+                        ctx.beginPath();
+                        ctx.moveTo(x + radius, y);
+                        ctx.lineTo(x + bubbleW - radius, y);
+                        ctx.quadraticCurveTo(x + bubbleW, y, x + bubbleW, y + radius);
+                        ctx.lineTo(x + bubbleW, y + bubbleH - radius);
+                        ctx.quadraticCurveTo(x + bubbleW, y + bubbleH, x + bubbleW - radius, y + bubbleH);
+                        ctx.lineTo(x + radius, y + bubbleH);
+                        ctx.quadraticCurveTo(x, y + bubbleH, x, y + bubbleH - radius);
+                        ctx.lineTo(x, y + radius);
+                        ctx.quadraticCurveTo(x, y, x + radius, y);
+                        ctx.closePath();
+                        ctx.fill();
+                    }
+                }
+            }
+
+            /**
+             * Render Ghosty using its own render method with interpolation.
+             * @param {object} ghosty - Ghosty instance
+             * @param {number} interpolation - Interpolation factor [0, 1)
+             * @param {object} physics - PhysicsEngine instance
+             * @param {number} time - Current time in ms
+             */
+            renderGhosty(ghosty, interpolation, physics, time) {
+                if (ghosty && ghosty.render) {
+                    ghosty.render(this.ctx, interpolation, physics, time);
+                }
+            }
+
+            /**
+             * Render particles with batched fillStyle.
+             * Sets fillStyle to white once, then only changes globalAlpha per particle.
+             * Avoids ctx.save()/ctx.restore() in the loop.
+             * @param {object|null} particleSystem - ParticleSystem instance
+             */
+            renderParticles(particleSystem) {
+                if (!particleSystem) return;
+
+                const particles = particleSystem.getActiveParticles();
+                if (particles.length === 0) return;
+
+                const ctx = this.ctx;
+
+                // BATCHED: set fillStyle once for all particles
+                ctx.fillStyle = GAME_CONFIG.particles.color;
+
+                for (let i = 0; i < particles.length; i++) {
+                    const p = particles[i];
+                    if (!p.active || p.opacity <= 0) continue;
+
+                    // Only change globalAlpha per particle (no save/restore)
+                    ctx.globalAlpha = p.opacity;
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+
+                // Restore globalAlpha after batch
+                ctx.globalAlpha = 1.0;
+            }
+
+            /**
+             * Render score popups ("+1" floating text) from the effects manager.
+             * @param {object|null} effectsManager - EffectsManager instance
+             */
+            renderPopups(effectsManager) {
+                if (!effectsManager || !effectsManager.popups || effectsManager.popups.length === 0) return;
+
+                const ctx = this.ctx;
+                const popups = effectsManager.popups;
+
+                // Batch: set font once for all popups
+                ctx.font = 'bold 16px monospace';
+                ctx.fillStyle = '#FFFFFF';
+
+                for (let i = 0; i < popups.length; i++) {
+                    const popup = popups[i];
+                    if (popup.opacity <= 0) continue;
+
+                    ctx.globalAlpha = popup.opacity;
+                    ctx.fillText('+1', popup.x, popup.y - popup.offsetY);
+                }
+
+                // Restore globalAlpha
+                ctx.globalAlpha = 1.0;
+            }
+
+            /**
+             * Render the in-game HUD: large semi-transparent score centered in upper canvas.
+             * Only visible during Playing state.
+             * @param {number} score - Current score
+             * @param {string} gameState - Current game state
+             */
+            renderHUD(score, gameState) {
+                if (gameState !== GameState.Playing) return;
+
+                const ctx = this.ctx;
+
+                ctx.globalAlpha = this.config.hudScoreOpacity;
+                ctx.fillStyle = '#FFFFFF';
+                ctx.font = 'bold 64px monospace';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(score.toString(), this.canvasWidth / 2, this.canvasHeight * 0.2);
+
+                // Restore state
+                ctx.globalAlpha = 1.0;
+                ctx.textAlign = 'start';
+                ctx.textBaseline = 'alphabetic';
+            }
+
+            /**
+             * Render the Menu screen overlay: title, high score, input instructions.
+             * Ghosty bobbing is already handled by renderGhosty (uses ghosty.bobOffset).
+             * Requirements: 1.4, 1.5, 1.6, 1.7
+             * @param {number} highScore - Persisted high score value
+             * @param {number} bobOffset - Current bob offset (unused for text, kept for interface)
+             */
+            renderMenuScreen(highScore, bobOffset) {
+                const ctx = this.ctx;
+                const centerX = this.canvasWidth / 2;
+
+                // Title "Flappy Kiro" centered in upper quarter
+                const titleY = this.canvasHeight / 4;
+
+                // Draw title with dark shadow/outline for readability
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.font = 'bold 36px monospace';
+
+                // Shadow/outline (dark)
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                ctx.fillText('Flappy Kiro', centerX + 2, titleY + 2);
+
+                // Main title text (white)
+                ctx.fillStyle = '#FFFFFF';
+                ctx.fillText('Flappy Kiro', centerX, titleY);
+
+                // High score below title
+                ctx.font = '18px monospace';
+                ctx.fillStyle = '#FFD700';
+                ctx.fillText(`High Score: ${highScore}`, centerX, titleY + 45);
+
+                // --- Instruction Menu Box ---
+                const boxWidth = 300;
+                const boxHeight = 110;
+                const boxX = centerX - boxWidth / 2;
+                const boxY = titleY + 80;
+                
+                // Semi-transparent background box
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+                ctx.fillRect(boxX, boxY, boxWidth, boxHeight);
+                ctx.strokeStyle = '#FFFFFF';
+                ctx.lineWidth = 2;
+                ctx.strokeRect(boxX, boxY, boxWidth, boxHeight);
+
+                // Instructions Text
+                ctx.fillStyle = '#FFFFFF';
+                ctx.font = 'bold 16px monospace';
+                ctx.fillText('CONTROLS', centerX, boxY + 25);
+                
+                ctx.font = '14px monospace';
+                ctx.textAlign = 'left';
+                const textX = boxX + 20;
+                let textY = boxY + 60;
+                const lineHeight = 24;
+
+                ctx.fillText('SPACE / CLICK : Flap / Jump', textX, textY);
+                textY += lineHeight;
+                ctx.fillText('P / ESC       : Pause', textX, textY);
+
+                // Start prompt
+                ctx.textAlign = 'center';
+                ctx.fillStyle = '#00FF00'; // Greenish prompt
+                ctx.font = 'bold 16px monospace';
+                ctx.fillText('Press Space or Click to Start', centerX, boxY + boxHeight + 35);
+
+                // Restore text alignment
+                ctx.textAlign = 'start';
+                ctx.textBaseline = 'alphabetic';
+            }
+
+            /**
+             * Render the score display bar at the bottom of the canvas.
+             * Shows "Score: X | High: Y" in a dark bar.
+             * If new record and flash timer active, use gold color.
+             * @param {number} score - Current score
+             * @param {number} highScore - High score
+             * @param {boolean} isNewRecord - Whether current score is a new record
+             * @param {number} flashTimer - Remaining flash duration in ms
+             */
+            renderScoreDisplay(score, highScore, isNewRecord, flashTimer) {
+                const ctx = this.ctx;
+                const barHeight = 40;
+                const barY = this.canvasHeight - barHeight;
+
+                // Draw dark bottom bar
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                ctx.fillRect(0, barY, this.canvasWidth, barHeight);
+
+                // Text color: gold if new record flash active, otherwise white
+                if (isNewRecord && flashTimer > 0) {
+                    ctx.fillStyle = this.config.newRecordFlashColor;
+                } else {
+                    ctx.fillStyle = '#FFFFFF';
+                }
+
+                ctx.font = 'bold 14px monospace';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(
+                    `Score: ${score} | High: ${highScore}`,
+                    this.canvasWidth / 2,
+                    barY + barHeight / 2
+                );
+
+                // Restore text alignment
+                ctx.textAlign = 'start';
+                ctx.textBaseline = 'alphabetic';
+            }
+
+            /**
+             * Apply screen shake and white flash effects.
+             * Applies canvas translate offset for screen shake.
+             * Draws white flash overlay if active.
+             * @param {object|null} effectsManager - EffectsManager instance
+             */
+            renderEffects(effectsManager) {
+                if (!effectsManager) return;
+
+                const ctx = this.ctx;
+
+                // Screen shake: offset the canvas
+                if (effectsManager.shake && effectsManager.shake.active) {
+                    const shake = effectsManager.shake;
+                    const progress = shake.elapsed / shake.duration;
+                    const decay = 1 - progress;
+                    const offsetX = (Math.random() * 2 - 1) * shake.amplitude * decay;
+                    const offsetY = (Math.random() * 2 - 1) * shake.amplitude * decay;
+                    ctx.setTransform(1, 0, 0, 1, offsetX, offsetY);
+                }
+
+                // White flash overlay
+                if (effectsManager.flash && effectsManager.flash.active) {
+                    const flash = effectsManager.flash;
+                    const progress = flash.elapsed / flash.duration;
+                    const opacity = flash.opacity * (1 - progress);
+                    if (opacity > 0) {
+                        ctx.fillStyle = `rgba(255, 255, 255, ${opacity})`;
+                        ctx.fillRect(0, 0, this.canvasWidth, this.canvasHeight);
+                    }
+                }
+            }
+
+            /**
+             * Render the Ready screen instructions.
+             * Ghosty is already positioned at left-third by the engine.
+             * Displays "Press Space or Click to Flap" centered on canvas.
+             * Requirements: 1.9, 1.10
+             */
+            renderReadyScreen() {
+                const ctx = this.ctx;
+                const centerX = this.canvasWidth / 2;
+                const centerY = this.canvasHeight / 2;
+
+                // Instruction text: 18px bold, white with dark stroke
+                ctx.font = 'bold 18px monospace';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+
+                // Dark stroke for readability
+                ctx.strokeStyle = 'rgba(0, 0, 0, 0.7)';
+                ctx.lineWidth = 3;
+                ctx.strokeText('Press Space or Click to Flap', centerX, centerY);
+
+                // White fill
+                ctx.fillStyle = '#FFFFFF';
+                ctx.fillText('Press Space or Click to Flap', centerX, centerY);
+
+                // Restore text alignment and line width
+                ctx.textAlign = 'start';
+                ctx.textBaseline = 'alphabetic';
+                ctx.lineWidth = 1;
+            }
+
+            /**
+             * Render the Pause overlay.
+             * Semi-transparent dark overlay with "PAUSED" text and resume instructions.
+             * Requirements: 6.3, 6.4
+             */
+            renderPauseOverlay() {
+                const ctx = this.ctx;
+                const centerX = this.canvasWidth / 2;
+                const centerY = this.canvasHeight / 2;
+
+                // Semi-transparent dark overlay
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+                ctx.fillRect(0, 0, this.canvasWidth, this.canvasHeight);
+
+                // "PAUSED" text - large font, centered
+                ctx.font = 'bold 48px monospace';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillStyle = '#FFFFFF';
+                ctx.fillText('PAUSED', centerX, centerY - 100);
+
+                // --- Instruction Menu Box ---
+                const boxWidth = 300;
+                const boxHeight = 110;
+                const boxX = centerX - boxWidth / 2;
+                const boxY = centerY - 20;
+                
+                // Semi-transparent background box
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+                ctx.fillRect(boxX, boxY, boxWidth, boxHeight);
+                ctx.strokeStyle = '#FFFFFF';
+                ctx.lineWidth = 2;
+                ctx.strokeRect(boxX, boxY, boxWidth, boxHeight);
+
+                // Instructions Text
+                ctx.fillStyle = '#FFFFFF';
+                ctx.font = 'bold 16px monospace';
+                ctx.fillText('CONTROLS', centerX, boxY + 25);
+                
+                ctx.font = '14px monospace';
+                ctx.textAlign = 'left';
+                const textX = boxX + 20;
+                let textY = boxY + 60;
+                const lineHeight = 24;
+
+                ctx.fillText('SPACE / CLICK : Flap / Jump', textX, textY);
+                textY += lineHeight;
+                ctx.fillText('P / ESC       : Resume', textX, textY);
+
+                // Restore text alignment
+                ctx.textAlign = 'start';
+                ctx.textBaseline = 'alphabetic';
+            }
+
+            /**
+             * Render the Game Over screen overlay.
+             * Shows dark overlay, "GAME OVER", final score, high score, and restart prompt.
+             * The 500ms debounce for restart input is handled by GameEngine, not renderer.
+             * Requirements: 6.6, 6.7, 6.12
+             * @param {number} score - Final score for this session
+             * @param {number} highScore - All-time high score
+             */
+            renderGameOverScreen(score, highScore) {
+                const ctx = this.ctx;
+                const centerX = this.canvasWidth / 2;
+                const centerY = this.canvasHeight / 2;
+
+                // Semi-transparent dark overlay
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+                ctx.fillRect(0, 0, this.canvasWidth, this.canvasHeight);
+
+                // "GAME OVER" title
+                ctx.font = 'bold 36px monospace';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillStyle = '#FFFFFF';
+                ctx.fillText('GAME OVER', centerX, centerY - 60);
+
+                // Final score
+                ctx.font = 'bold 24px monospace';
+                ctx.fillText(`Score: ${score}`, centerX, centerY);
+
+                // High score
+                ctx.font = 'bold 20px monospace';
+                ctx.fillText(`High Score: ${highScore}`, centerX, centerY + 40);
+
+                // Restart prompt
+                ctx.font = '16px monospace';
+                ctx.fillText('Tap to Restart', centerX, centerY + 100);
+
+                // Restore text alignment
+                ctx.textAlign = 'start';
+                ctx.textBaseline = 'alphabetic';
+            }
+        }
+
+        // ============================================================
+        // Bootstrap - Initialize and Start the Game
+        // ============================================================
+
+        const canvas = document.getElementById('gameCanvas');
+        const game = new GameEngine(canvas);
+        game.init().then(() => {
+            game.start();
+        });
+
+    </script>
+</body>
+
+</html>

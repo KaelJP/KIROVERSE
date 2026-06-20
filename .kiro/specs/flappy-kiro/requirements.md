@@ -20,7 +20,7 @@ Flappy Kiro is a retro-style, endless side-scrolling browser game inspired by Fl
 - **Cloud**: A decorative semi-transparent background element rendered at varying depths to create a parallax scrolling effect
 - **Score_Bubble**: A white rounded-rectangle visual element displayed between walls as a decorative indicator
 - **Terminal_Velocity**: The maximum vertical speed (both upward and downward) that Ghosty cannot exceed
-- **Hitbox**: A collision boundary for Ghosty that is smaller than the sprite's visual bounding box, providing a forgiving collision margin
+- **Hitbox**: A circular collision boundary for Ghosty (see Circular_Hitbox) that is smaller than the sprite's visual bounding box, providing a forgiving collision margin
 - **Difficulty_Scaler**: The subsystem responsible for progressively increasing game speed and reducing gap sizes as the player's score increases
 - **Screen_Shake**: A brief rapid displacement of the Canvas rendering offset to provide visual impact feedback on collision
 - **Particle_Trail**: A sequence of small fading visual elements emitted behind Ghosty during movement
@@ -28,6 +28,9 @@ Flappy Kiro is a retro-style, endless side-scrolling browser game inspired by Fl
 - **Invincibility_Frame**: A short time window after game restart during which Ghosty cannot collide with walls
 - **Movement_Interpolation**: The smoothing of Ghosty's position between physics steps to eliminate visual stuttering
 - **Audio_Manager**: The subsystem responsible for loading, playing, and managing all game sound effects and background music
+- **Game_Config**: A single centralized configuration object defined at the top of the codebase containing all numerical constants, tuning values, and parameters for physics, difficulty, collision, rendering, audio, and particle systems
+- **Object_Pool**: A pre-allocated collection of reusable instances (Wall_Pairs or Particles) that are recycled rather than created and destroyed, minimizing garbage collection pressure
+- **Circular_Hitbox**: A circular collision boundary for Ghosty defined as the inscribed circle within the sprite dimensions, where the radius is configurable via Game_Config
 
 ## Requirements
 
@@ -88,16 +91,18 @@ Flappy Kiro is a retro-style, endless side-scrolling browser game inspired by Fl
 
 #### Acceptance Criteria
 
-1. THE Collision_Detector SHALL use a Hitbox for Ghosty that is 70% of the sprite's visual width and 70% of the sprite's visual height, centered within the sprite, providing a forgiving collision margin
-2. WHILE the Game_State is Playing, THE Collision_Detector SHALL check for overlap between Ghosty's Hitbox and all active Wall bounding rectangles each frame
-3. WHEN the Collision_Detector detects any overlap between Ghosty's Hitbox and a Wall bounding rectangle, THE Game_Engine SHALL transition Game_State to Game_Over
-4. WHEN Ghosty's bottom edge (based on full sprite bounds) reaches the top edge of the Score_Display bar, THE Game_Engine SHALL transition Game_State to Game_Over
-5. WHEN Ghosty contacts the top boundary of the Canvas, THE Game_Engine SHALL set Ghosty's upward velocity to zero without triggering Game_Over
-6. WHEN the Game_State transitions to Game_Over, THE Audio_Manager SHALL play the `assets/game_over.wav` sound effect
-7. WHEN the Game_State transitions to Game_Over, THE Game_Engine SHALL apply a Screen_Shake effect with an amplitude of 5 pixels and duration of 300 milliseconds
-8. WHEN the Game_State transitions to Game_Over, THE Game_Engine SHALL apply a collision response animation to Ghosty consisting of a brief tumble rotation of 360 degrees over 500 milliseconds
-9. WHEN the Game_State transitions to Game_Over, THE Game_Engine SHALL flash the Canvas with a white overlay at 50% opacity for 100 milliseconds
-10. WHEN the Game_State transitions to Game_Over, THE Game_Engine SHALL stop Wall scrolling and freeze the game scene after the collision animation completes
+1. THE Collision_Detector SHALL use a Circular_Hitbox for Ghosty defined as the inscribed circle within the sprite dimensions, where the collision radius is configurable via Game_Config
+2. THE Collision_Detector SHALL determine collision between Ghosty's Circular_Hitbox and a Wall by computing the distance from the circle center to the nearest point on the Wall's axis-aligned bounding rectangle, and detecting overlap when that distance is less than the collision radius
+3. THE Collision_Detector SHALL use axis-aligned bounding rectangles as the collision bounds for all Wall objects
+4. WHILE the Game_State is Playing, THE Collision_Detector SHALL check for overlap between Ghosty's Circular_Hitbox and all active Wall bounding rectangles each frame
+5. WHEN the Collision_Detector detects any overlap between Ghosty's Circular_Hitbox and a Wall bounding rectangle, THE Game_Engine SHALL transition Game_State to Game_Over
+6. WHEN Ghosty's bottom edge (based on full sprite bounds) reaches the top edge of the Score_Display bar, THE Game_Engine SHALL transition Game_State to Game_Over
+7. WHEN Ghosty contacts the top boundary of the Canvas, THE Game_Engine SHALL set Ghosty's upward velocity to zero without triggering Game_Over
+8. WHEN the Game_State transitions to Game_Over, THE Audio_Manager SHALL play the `assets/game_over.wav` sound effect
+9. WHEN the Game_State transitions to Game_Over, THE Game_Engine SHALL apply a Screen_Shake effect with an amplitude of 5 pixels and duration of 300 milliseconds
+10. WHEN the Game_State transitions to Game_Over, THE Game_Engine SHALL apply a collision response animation to Ghosty consisting of a brief tumble rotation of 360 degrees over 500 milliseconds
+11. WHEN the Game_State transitions to Game_Over, THE Game_Engine SHALL flash the Canvas with a white overlay at 50% opacity for 100 milliseconds
+12. WHEN the Game_State transitions to Game_Over, THE Game_Engine SHALL stop Wall scrolling and freeze the game scene after the collision animation completes
 
 ### Requirement 5: Scoring System
 
@@ -159,7 +164,7 @@ Flappy Kiro is a retro-style, endless side-scrolling browser game inspired by Fl
 
 1. THE Game_Engine SHALL render Ghosty using the `assets/ghosty.png` sprite image
 2. THE Game_Engine SHALL render the background with a light blue color (#87CEEB) and apply a sketchy hand-drawn visual style using subtle procedural line overlays or texture
-3. THE Game_Engine SHALL maintain a consistent frame rate of at least 30 frames per second using requestAnimationFrame
+3. THE Game_Engine SHALL maintain a consistent frame rate of at least 60 frames per second using requestAnimationFrame
 4. THE Game_Engine SHALL scale the Canvas rendering to fit the browser viewport while preserving the 400×600 aspect ratio, centering the Canvas horizontally and vertically with a dark background fill for letterboxing
 5. IF the Ghosty sprite image (`assets/ghosty.png`) fails to load, THEN THE Game_Engine SHALL render a white circle as a fallback placeholder for Ghosty
 6. THE Game_Engine SHALL render Clouds as semi-transparent white shapes (opacity between 0.3 and 0.7) at randomized vertical positions in the upper two-thirds of the Canvas
@@ -173,8 +178,37 @@ Flappy Kiro is a retro-style, endless side-scrolling browser game inspired by Fl
 
 #### Acceptance Criteria
 
-1. THE Game_Engine SHALL run the game loop using requestAnimationFrame for frame timing
+1. THE Game_Engine SHALL run the game loop using requestAnimationFrame for frame timing, targeting 60 frames per second
 2. THE Game_Engine SHALL calculate delta-time as the elapsed time since the previous frame and cap it to a maximum of 50 milliseconds to prevent physics instability on frame drops or tab switching
 3. WHILE the Game_State is Playing, THE Game_Engine SHALL update physics, then collision detection, then rendering each frame in that order
 4. WHILE the Game_State is Ready, Menu, Paused, or Game_Over, THE Game_Engine SHALL continue the render loop to display the current visual state without updating physics or collision detection
 5. WHEN the browser tab loses focus, THE Game_Engine SHALL automatically transition to Paused state if Game_State is Playing
+6. THE Game_Engine SHALL minimize frame time to remain under 16.67 milliseconds per frame to sustain the 60 frames per second target
+
+### Requirement 10: Centralized Configuration
+
+**User Story:** As a developer, I want all numerical constants and tuning values centralized in a single configuration object, so that I can tweak gameplay parameters without modifying logic code.
+
+#### Acceptance Criteria
+
+1. THE Game_Engine SHALL define a single centralized Game_Config object at the top of the codebase containing all numerical constants for physics, difficulty, collision, rendering, audio, and particle systems
+2. THE Game_Engine SHALL reference Game_Config values for all physics parameters including Gravity magnitude, Flap impulse velocity, Terminal_Velocity limits, and rotation angle bounds
+3. THE Game_Engine SHALL reference Game_Config values for all difficulty parameters including base wall speed, gap height, wall spacing, scaling increments, and minimum/maximum bounds
+4. THE Game_Engine SHALL reference Game_Config values for all collision parameters including Ghosty's Circular_Hitbox radius, Wall bounding rectangle dimensions, and boundary offsets
+5. THE Game_Engine SHALL reference Game_Config values for all rendering parameters including Canvas dimensions, frame rate target, color values, opacity levels, and animation durations
+6. THE Game_Engine SHALL reference Game_Config values for all audio parameters including volume levels and sound asset paths
+7. THE Game_Engine SHALL reference Game_Config values for all particle parameters including particle count ranges, sizes, fade durations, and spawn offsets
+8. THE Game_Engine SHALL NOT embed numerical constants or tuning values directly in logic code when those values are configurable gameplay parameters
+
+### Requirement 11: Performance Optimization
+
+**User Story:** As a player, I want the game to run without frame drops or stutter, so that gameplay feels smooth and responsive on a wide range of devices.
+
+#### Acceptance Criteria
+
+1. THE Game_Engine SHALL use an Object_Pool for Wall_Pair instances, pre-allocating a pool of reusable Wall_Pair objects and recycling them when they scroll off-screen instead of creating new instances
+2. THE Game_Engine SHALL use an Object_Pool for Particle instances, pre-allocating a pool of reusable Particle objects and recycling them when their lifetime expires instead of creating new instances
+3. WHEN a Wall_Pair scrolls off the left edge of the Canvas, THE Game_Engine SHALL return the Wall_Pair to the Object_Pool for reuse rather than destroying the instance
+4. WHEN a Particle's opacity reaches zero, THE Game_Engine SHALL return the Particle to the Object_Pool for reuse rather than destroying the instance
+5. THE Game_Engine SHALL batch similar draw operations during rendering, drawing all Wall objects in sequence, then all Particle objects in sequence, then all UI elements in sequence, to minimize Canvas rendering state changes
+6. THE Game_Engine SHALL minimize Canvas context state changes by grouping draw calls that share the same fill color, stroke color, or transformation matrix
