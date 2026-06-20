@@ -53,6 +53,7 @@
 </head>
 
 <body>
+    <video id="jumpscareVideo" src="video/jumpScare.mp4" preload="auto" style="display:none; position:fixed; top:0; left:0; width:100vw; height:100vh; object-fit:cover; z-index:9999; pointer-events:none;"></video>
     <canvas id="gameCanvas" width="400" height="600"></canvas>
 
     <script>
@@ -765,6 +766,11 @@
                             this.particleSystem.emitBurst(this.ghosty.x, this.ghosty.y + this.ghosty.height);
                         }
                     } else if (state === GameState.Game_Over) {
+                        const video = document.getElementById('jumpscareVideo');
+                        if (video && video.style.display === 'block') {
+                            // Prevent skipping the jumpscare
+                            return;
+                        }
                         const now = performance.now();
                         if (now - this._gameOverTime >= GAME_CONFIG.rendering.gameOverDebounce) {
                             this.resetGame();
@@ -796,8 +802,23 @@
             triggerGameOver() {
                 this.stateMachine.transition(GameState.Game_Over);
                 if (this.scoreManager) this.scoreManager.updateHighScore();
-                if (this.audioManager) this.audioManager.play('gameOver');
-                if (this.effectsManager) this.effectsManager.triggerGameOver();
+                
+                const video = document.getElementById('jumpscareVideo');
+                if (video) {
+                    video.style.display = 'block';
+                    // Optional: remove pointer events while video plays to prevent clicks 
+                    // from being absorbed if we wanted clicks to skip, but here pointer-events is none in HTML
+                    // Wait, if we want clicks to pass through? No, we don't care.
+                    video.play().catch(e => console.error("Jumpscare video play failed:", e));
+                    
+                    video.onended = () => {
+                        video.style.display = 'none';
+                        this.resetGame();
+                    };
+                } else {
+                    if (this.audioManager) this.audioManager.play('gameOver');
+                    if (this.effectsManager) this.effectsManager.triggerGameOver();
+                }
             }
 
             /**
