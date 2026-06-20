@@ -18,6 +18,19 @@ export const GAME_CONFIG = Object.freeze({
     frameBudgetMs: 16.67
   }),
 
+  levels: Object.freeze({
+    scorePerLevel: 10,
+    backgrounds: Object.freeze([
+      'assets/bg_level1.png',
+      'assets/bg_level2.png',
+      'assets/bg_level3.png',
+      'assets/bg_level4.png',
+      'assets/bg_level5.png'
+    ]),
+    maxLevelTheme: 5,
+    transitionDurationMs: 1500
+  }),
+
   physics: Object.freeze({
     gravity: 980,
     flapImpulse: -300,
@@ -317,25 +330,29 @@ export class DifficultyScaler {
 
   calculate(score) {
     const config = this.config;
+    // Level increases every 10 points (Score 0-9 = Level 1)
+    const level = Math.floor(score / 10) + 1;
+    const levelIndex = level - 1;
 
+    // Difficulty increases per level
     const speedMultiplier = Math.min(
-      1.0 + Math.floor(score / config.speedThreshold) * (config.speedIncrementPercent / 100),
+      1.0 + levelIndex * (config.speedIncrementPercent / 100),
       config.maxSpeedMultiplier
     );
 
     const gapHeight = Math.max(
-      config.baseGapHeight - Math.floor(score / config.gapThreshold) * config.gapDecrementPx,
+      config.baseGapHeight - levelIndex * config.gapDecrementPx * 2, // Double decrement to make it noticeable per level
       config.minGapHeight
     );
 
     const spacing = Math.max(
-      config.baseSpacing - Math.floor(score / config.spacingThreshold) * config.spacingDecrementPx,
+      config.baseSpacing - levelIndex * config.spacingDecrementPx,
       config.minSpacing
     );
 
     const currentSpeed = config.baseWallSpeed * speedMultiplier;
 
-    return { speedMultiplier, gapHeight, spacing, currentSpeed };
+    return { level, speedMultiplier, gapHeight, spacing, currentSpeed };
   }
 
   reset() {}

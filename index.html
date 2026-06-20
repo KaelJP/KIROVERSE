@@ -72,6 +72,19 @@
                 frameBudgetMs: 16.67
             }),
 
+            levels: Object.freeze({
+                scorePerLevel: 10,
+                backgrounds: Object.freeze([
+                    'assets/bg_level1.png',
+                    'assets/bg_level2.png',
+                    'assets/bg_level3.png',
+                    'assets/bg_level4.png',
+                    'assets/bg_level5.png'
+                ]),
+                maxLevelTheme: 5,
+                transitionDurationMs: 1500
+            }),
+
             physics: Object.freeze({
                 gravity: 980,                    // px/s²
                 flapImpulse: -300,               // px/s (negative = upward)
@@ -945,25 +958,29 @@
              */
             calculate(score) {
                 const config = this.config;
+                // Level increases every 10 points (Score 0-9 = Level 1)
+                const level = Math.floor(score / 10) + 1;
+                const levelIndex = level - 1;
 
+                // Difficulty increases per level
                 const speedMultiplier = Math.min(
-                    1.0 + Math.floor(score / config.speedThreshold) * (config.speedIncrementPercent / 100),
+                    1.0 + levelIndex * (config.speedIncrementPercent / 100),
                     config.maxSpeedMultiplier
                 );
 
                 const gapHeight = Math.max(
-                    config.baseGapHeight - Math.floor(score / config.gapThreshold) * config.gapDecrementPx,
+                    config.baseGapHeight - levelIndex * config.gapDecrementPx * 2, // Double decrement to make it noticeable per level
                     config.minGapHeight
                 );
 
                 const spacing = Math.max(
-                    config.baseSpacing - Math.floor(score / config.spacingThreshold) * config.spacingDecrementPx,
+                    config.baseSpacing - levelIndex * config.spacingDecrementPx,
                     config.minSpacing
                 );
 
                 const currentSpeed = config.baseWallSpeed * speedMultiplier;
 
-                return { speedMultiplier, gapHeight, spacing, currentSpeed };
+                return { level, speedMultiplier, gapHeight, spacing, currentSpeed };
             }
 
             /**
@@ -2306,6 +2323,19 @@
                 this.canvasWidth = GAME_CONFIG.canvas.width;
                 this.canvasHeight = GAME_CONFIG.canvas.height;
                 
+                // Background state
+                this.bgImages = [];
+                if (GAME_CONFIG.levels && GAME_CONFIG.levels.backgrounds) {
+                    GAME_CONFIG.levels.backgrounds.forEach(src => {
+                        const img = new Image();
+                        img.src = src;
+                        this.bgImages.push(img);
+                    });
+                }
+                this.currentBgIndex = 0;
+                this.targetBgIndex = 0;
+                this.bgTransitionStartTime = 0;
+                
                 // Load coin sprite
                 this.coinSpriteLoaded = false;
                 this.coinSprite = new Image();
@@ -2347,7 +2377,7 @@
                 this.renderEffects(effectsManager);
 
                 // 1. Background
-                this.renderBackground(ctx);
+                this.renderBackground(ctx, scoreManager ? scoreManager.currentScore : 0, time);
 
                 // 2. Clouds
                 this.renderClouds(cloudSystem);
@@ -2409,9 +2439,50 @@
              * Render the background fill color.
              * @param {CanvasRenderingContext2D} ctx
              */
-            renderBackground(ctx) {
-                ctx.fillStyle = GAME_CONFIG.canvas.backgroundColor;
-                ctx.fillRect(0, 0, this.canvasWidth, this.canvasHeight);
+            renderBackground(ctx, score, time) {
+                if (!this.bgImages || this.bgImages.length === 0) {
+                    ctx.fillStyle = GAME_CONFIG.canvas.backgroundColor;
+                    ctx.fillRect(0, 0, this.canvasWidth, this.canvasHeight);
+                    return;
+                }
+
+                const level = Math.floor(score / (GAME_CONFIG.levels ? GAME_CONFIG.levels.scorePerLevel : 10)) + 1;
+                const maxTheme = GAME_CONFIG.levels ? GAME_CONFIG.levels.maxLevelTheme : 5;
+                const newTargetIndex = Math.min(level - 1, maxTheme - 1);
+
+                if (newTargetIndex !== this.targetBgIndex) {
+                    this.currentBgIndex = this.targetBgIndex; // Finish previous transition if any
+                    this.targetBgIndex = newTargetIndex;
+                    this.bgTransitionStartTime = time;
+                }
+
+                // Draw base background
+                const currentImg = this.bgImages[this.currentBgIndex];
+                if (currentImg && currentImg.complete) {
+                    ctx.drawImage(currentImg, 0, 0, this.canvasWidth, this.canvasHeight);
+                } else {
+                    ctx.fillStyle = GAME_CONFIG.canvas.backgroundColor;
+                    ctx.fillRect(0, 0, this.canvasWidth, this.canvasHeight);
+                }
+
+                // Crossfade if transitioning
+                if (this.targetBgIndex !== this.currentBgIndex) {
+                    const elapsed = time - this.bgTransitionStartTime;
+                    const duration = GAME_CONFIG.levels ? GAME_CONFIG.levels.transitionDurationMs : 1500;
+                    let alpha = elapsed / duration;
+
+                    if (alpha >= 1) {
+                        alpha = 1;
+                        this.currentBgIndex = this.targetBgIndex;
+                    }
+
+                    const targetImg = this.bgImages[this.targetBgIndex];
+                    if (targetImg && targetImg.complete) {
+                        ctx.globalAlpha = alpha;
+                        ctx.drawImage(targetImg, 0, 0, this.canvasWidth, this.canvasHeight);
+                        ctx.globalAlpha = 1.0;
+                    }
+                }
             }
 
             /**
@@ -2559,9 +2630,18 @@
                 if (gameState !== GameState.Playing) return;
 
                 const ctx = this.ctx;
+                const level = Math.floor(score / (GAME_CONFIG.levels ? GAME_CONFIG.levels.scorePerLevel : 10)) + 1;
 
                 ctx.globalAlpha = this.config.hudScoreOpacity;
                 ctx.fillStyle = '#FFFFFF';
+                
+                // Draw Level
+                ctx.font = 'bold 32px monospace';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(`Level ${level}`, this.canvasWidth / 2, this.canvasHeight * 0.1);
+
+                // Draw Score
                 ctx.font = 'bold 64px monospace';
                 ctx.textAlign = 'center';
                 ctx.textBaseline = 'middle';
